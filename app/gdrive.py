@@ -171,15 +171,21 @@ def build_auth_url(redirect_uri: str = "http://localhost") -> dict[str, str]:
         scopes=GDRIVE_SCOPES,
         redirect_uri=redirect_uri,
     )
+    # PKCE is enabled by default for Desktop clients; we must persist the
+    # code_verifier so the later token exchange can include it.
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
-    # Persist state for the code exchange step.
+    code_verifier = getattr(flow, "code_verifier", None) or ""
+    # Persist state + redirect + PKCE verifier for the code exchange step.
     state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(state + "\n" + redirect_uri, encoding="utf-8")
+    state_path.write_text(
+        f"{state}\n{redirect_uri}\n{code_verifier}\n",
+        encoding="utf-8",
+    )
     return {"auth_url": auth_url, "state": state, "redirect_uri": redirect_uri}
 
 
@@ -222,23 +228,29 @@ def exchange_auth_code(code: str) -> dict[str, Any]:
     code = _extract_oauth_code(code)
 
     redirect_uri = "http://localhost"
+    code_verifier = None
     if state_path.is_file():
         lines = state_path.read_text(encoding="utf-8").strip().splitlines()
         if len(lines) >= 2:
             redirect_uri = lines[1].strip() or redirect_uri
+        if len(lines) >= 3 and lines[2].strip():
+            code_verifier = lines[2].strip()
 
     flow = Flow.from_client_secrets_file(
         str(secrets_path),
         scopes=GDRIVE_SCOPES,
         redirect_uri=redirect_uri,
     )
+    if code_verifier:
+        flow.code_verifier = code_verifier
+
     flow.fetch_token(code=code)
     creds = flow.credentials
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     Path(GDRIVE_TOKEN_PATH).write_text(creds.to_json(), encoding="utf-8")
     if state_path.is_file():
         state_path.unlink(missing_ok=True)
-    return {"authorized": True, "token_path": GDRIVE_TOKEN_PATH}
+    return {"authorized": True, "token_path": str(GDRIVE_TOKEN_PATH)}
 
 
 def _service():
