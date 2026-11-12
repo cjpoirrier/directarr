@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Directarr</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">D</span>
+        <div>
+          <strong>Directarr</strong>
+          <small>Anime DDL Indexer</small>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+        <button class="nav-btn" data-view="search">Search</button>
+        <button class="nav-btn" data-view="releases">Releases</button>
+        <button class="nav-btn" data-view="downloads">Downloads</button>
+        <button class="nav-btn" data-view="sources">Sources</button>
+        <button class="nav-btn" data-view="gdrive">Google Drive</button>
+        <button class="nav-btn" data-view="settings">Settings</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="conn-status" class="pill muted">API key required</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 id="view-title">Dashboard</h1>
+        <div class="top-actions">
+          <input id="api-key" type="password" placeholder="API key" autocomplete="off" />
+          <button id="save-key" class="btn">Save key</button>
+        </div>
+      </header>
+
+      <section id="view-dashboard" class="view active">
+        <div class="cards">
+          <div class="card"><h3>Sources</h3><p id="stat-sources">—</p></div>
+          <div class="card"><h3>Releases</h3><p id="stat-releases">—</p></div>
+          <div class="card"><h3>Downloads</h3><p id="stat-downloads">—</p></div>
+          <div class="card"><h3>Google Drive</h3><p id="stat-gdrive">—</p></div>
+        </div>
+        <div class="panel">
+          <h2>Recent downloads</h2>
+          <div id="dash-downloads" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-search" class="view">
+        <div class="panel">
+          <form id="search-form" class="row">
+            <input id="search-q" type="search" placeholder="Search anime (e.g. frieren, rezero)" required />
+            <button class="btn primary" type="submit">Search</button>
+          </form>
+          <p class="hint">Runs enabled source adapters and stores results for Torznab / the Releases tab.</p>
+          <div id="search-results" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-releases" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Indexed releases</h2>
+            <button class="btn" id="refresh-releases">Refresh</button>
+          </div>
+          <div id="releases-table" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-downloads" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Download queue</h2>
+            <button class="btn" id="refresh-downloads">Refresh</button>
+          </div>
+          <div id="downloads-table" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-sources" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Sources</h2>
+            <button class="btn" id="reload-sources">Reload config</button>
+          </div>
+          <div id="sources-table" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-gdrive" class="view">
+        <div class="panel">
+          <h2>Authorization</h2>
+          <div id="gdrive-status" class="muted">Loading…</div>
+          <div class="row" style="margin-top:1rem">
+            <button class="btn" id="gdrive-auth-url">1. Open Google auth</button>
+            <input id="gdrive-code" type="text" placeholder="2. Paste the full localhost URL (or just the code)" style="flex:1; min-width:18rem" />
+            <button class="btn primary" id="gdrive-auth-code">3. Submit</button>
+          </div>
+          <p class="hint" id="gdrive-hint">
+            Place Desktop OAuth client JSON at <code>config/credentials.json</code> first.
+            After you click Allow, the browser will show “localhost refused to connect” —
+            that is normal. Copy the <strong>entire address bar</strong> and paste it above.
+          </p>
+        </div>
+        <div class="panel">
+          <h2>Resolve share link</h2>
+          <form id="resolve-form" class="row">
+            <input id="resolve-url" type="url" placeholder="https://drive.google.com/drive/folders/..." required />
+            <button class="btn primary" type="submit">Resolve</button>
+          </form>
+          <div id="resolve-results" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view">
+        <div class="panel">
+          <h2>Connection</h2>
+          <p>Torznab URL (for Sonarr):</p>
+          <code id="torznab-url">http://localhost:8787/api?apikey=YOUR_KEY</code>
+          <p class="hint" style="margin-top:1rem">API docs: <a href="/docs" target="_blank">/docs</a></p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

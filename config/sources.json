@@ -1,0 +1,12 @@
+[
+  {
+    "id": "kayoanime",
+    "name": "KayoAnime",
+    "adapter": "kayoanime",
+    "enabled": true,
+    "base_url": "https://kayoanime.com",
+    "max_posts": 5,
+    "follow_posts": true,
+    "timeout": 25
+  }
+]
