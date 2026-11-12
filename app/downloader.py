@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import shutil
 import socket
 import uuid
 from pathlib import Path
@@ -76,7 +77,7 @@ async def run_download(
             target = await _download_drive(job_id, title, url, temp, drive_file_id)
         else:
             await _download_http(job_id, url, temp)
-            temp.replace(target)
+            shutil.move(temp, target)
 
         with connect() as db:
             db.execute(
@@ -158,5 +159,5 @@ async def _download_drive(
 
     await asyncio.to_thread(gdrive.download_file_to_path, file_id, temp, progress_cb)
     target = DOWNLOAD_DIR / dest_name
-    temp.replace(target)
+    shutil.move(temp, target)
     return target
