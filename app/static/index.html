@@ -96,16 +96,20 @@
       <section id="view-gdrive" class="view">
         <div class="panel">
           <h2>Authorization</h2>
-          <div id="gdrive-status" class="muted">Loading…</div>
-          <div class="row" style="margin-top:1rem">
-            <button class="btn" id="gdrive-auth-url">1. Open Google auth</button>
-            <input id="gdrive-code" type="text" placeholder="2. Paste the full localhost URL (or just the code)" style="flex:1; min-width:18rem" />
-            <button class="btn primary" id="gdrive-auth-code">3. Submit</button>
+          <div id="gdrive-status" class="muted">Loading...</div>
+          <div style="margin-top:1rem; display:flex; flex-direction:column; gap:0.75rem; max-width:40rem">
+            <div class="row">
+              <button class="btn" id="gdrive-auth-url">1. Open Google auth</button>
+            </div>
+            <div class="row">
+              <input id="gdrive-code" type="text" placeholder="2. Paste full localhost URL or code here" />
+              <button class="btn primary" id="gdrive-auth-code">3. Submit</button>
+            </div>
           </div>
           <p class="hint" id="gdrive-hint">
             Place Desktop OAuth client JSON at <code>config/credentials.json</code> first.
-            After you click Allow, the browser will show “localhost refused to connect” —
-            that is normal. Copy the <strong>entire address bar</strong> and paste it above.
+            After you click Allow, the browser shows "localhost refused to connect" -- that is normal.
+            Copy the <strong>entire address bar</strong> and paste it above, then click Submit.
           </p>
         </div>
         <div class="panel">

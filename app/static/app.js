@@ -265,12 +265,13 @@
     try {
       const r = await api("/api/v1/gdrive/auth-url");
       window.open(r.auth_url, "_blank", "noopener");
-      toast("Browser opened — after Allow, copy the full address bar and paste it below");
+      toast("Browser opened - after Allow, copy the full address bar and paste it below");
       const hint = $("#gdrive-hint");
       if (hint) {
         hint.innerHTML =
-          "After you click <strong>Allow</strong>, the browser will show “localhost refused to connect”. " +
-          "That is expected. Copy the <strong>entire address bar</strong> (it starts with <code>http://localhost/?code=…</code>) and paste it into the box, then click Submit.";
+          'After you click <strong>Allow</strong>, the browser will show "localhost refused to connect". ' +
+          "That is expected. Copy the <strong>entire address bar</strong> " +
+          "(it starts with <code>http://localhost/?code=...</code>) and paste it into the box, then click Submit.";
       }
     } catch (e) {
       toast(e.message, true);
