@@ -13,14 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .config import (
-    CONFIG_DIR,
-    GDRIVE_CLIENT_SECRETS,
-    GDRIVE_REDIRECT_URI,
-    GDRIVE_SCOPES,
-    GDRIVE_TOKEN_PATH,
-    PUBLIC_BASE_URL,
-)
+from .config import CONFIG_DIR, GDRIVE_CLIENT_SECRETS, GDRIVE_SCOPES, GDRIVE_TOKEN_PATH
 
 # Lazy imports so the rest of the app starts without Google libs installed.
 _google_ready = False
@@ -113,51 +106,15 @@ def is_drive_url(url: str) -> bool:
 
 
 def credentials_status() -> dict[str, Any]:
-    """Report OAuth setup and whether the stored token still works."""
     secrets = Path(GDRIVE_CLIENT_SECRETS)
     token = Path(GDRIVE_TOKEN_PATH)
-    authorized = False
-    token_valid = False
-    needs_reauth = False
-    error = None
-    if secrets.is_file() and token.is_file():
-        try:
-            _load_credentials()
-            authorized = True
-            token_valid = True
-        except Exception as exc:
-            needs_reauth = True
-            error = str(exc)
-            # Token file exists but is expired/revoked/broken.
-            authorized = False
     return {
         "client_secrets_present": secrets.is_file(),
         "token_present": token.is_file(),
         "client_secrets_path": str(secrets),
         "token_path": str(token),
         "scopes": list(GDRIVE_SCOPES),
-        "authorized": authorized,
-        "token_valid": token_valid,
-        "needs_reauth": needs_reauth,
-        "error": error,
-    }
-
-
-def disconnect() -> dict[str, Any]:
-    """Remove stored OAuth token so the operator can reauthorize cleanly."""
-    token = Path(GDRIVE_TOKEN_PATH)
-    state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
-    removed_token = False
-    if token.is_file():
-        token.unlink()
-        removed_token = True
-    if state_path.is_file():
-        state_path.unlink(missing_ok=True)
-    return {
-        "authorized": False,
-        "disconnected": removed_token,
-        "token_present": False,
-        "message": "Google Drive disconnected. Run authorization again to reconnect.",
+        "authorized": token.is_file() and secrets.is_file(),
     }
 
 
@@ -194,22 +151,29 @@ def _load_credentials():
     )
 
 
-def _default_redirect_uri() -> str:
-    """Prefer server callback when PUBLIC_URL is set; else localhost paste flow."""
-    if GDRIVE_REDIRECT_URI:
-        return GDRIVE_REDIRECT_URI
-    return "http://localhost"
+# Desktop clients should use loopback; Google deprecated urn:ietf:wg:oauth:2.0:oob.
+_DEFAULT_REDIRECT_URI = "http://localhost"
 
 
-def build_auth_url(redirect_uri: str | None = None) -> dict[str, str]:
-    """Start OAuth and return a browser URL + state.
+def _normalize_auth_code(code: str) -> str:
+    """Accept a raw code or a full redirect URL containing ?code=..."""
+    code = (code or "").strip().strip('"').strip("'")
+    if not code:
+        raise ValueError("Empty authorization code.")
+    if "code=" in code:
+        from urllib.parse import parse_qs, urlparse
 
-    Preferred path: set DIRECTARR_PUBLIC_URL (e.g. http://10.0.0.93:8787) and
-    register the same callback in Google Cloud Console as a Web application
-    redirect URI. Google then sends the code to the backend automatically.
+        # User pasted the whole redirect URL from the browser address bar.
+        parsed = urlparse(code if "://" in code else "http://localhost/?" + code.lstrip("?"))
+        qs = parse_qs(parsed.query)
+        if qs.get("code"):
+            return qs["code"][0].strip()
+        raise ValueError("Could not find code= in the pasted URL.")
+    return code
 
-    Fallback: http://localhost paste-the-URL flow when no public URL is configured.
-    """
+
+def build_auth_url(redirect_uri: str = _DEFAULT_REDIRECT_URI) -> dict[str, str]:
+    """Start OAuth and return a browser URL. Use a fresh code immediately (one-time)."""
     _ensure_google()
     from google_auth_oauthlib.flow import Flow
 
@@ -217,76 +181,34 @@ def build_auth_url(redirect_uri: str | None = None) -> dict[str, str]:
     if not secrets_path.is_file():
         raise RuntimeError(f"Missing OAuth client secrets at {secrets_path}")
 
-    redirect_uri = (redirect_uri or _default_redirect_uri()).rstrip("/")
     flow = Flow.from_client_secrets_file(
         str(secrets_path),
         scopes=GDRIVE_SCOPES,
         redirect_uri=redirect_uri,
     )
-    # PKCE is enabled by default for public clients; persist code_verifier.
     auth_url, state = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
         prompt="consent",
     )
-    code_verifier = getattr(flow, "code_verifier", None) or ""
     state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        f"{state}\n{redirect_uri}\n{code_verifier}\n",
-        encoding="utf-8",
-    )
-    mode = "callback" if redirect_uri != "http://localhost" and "callback" in redirect_uri else "paste"
+    state_path.write_text(state + "\n" + redirect_uri, encoding="utf-8")
     return {
         "auth_url": auth_url,
         "state": state,
         "redirect_uri": redirect_uri,
-        "mode": mode,
-        "public_base_url": PUBLIC_BASE_URL or None,
+        "instructions": (
+            "1) Open auth_url and sign in. "
+            "2) After approve, the browser goes to http://localhost/?code=... "
+            "(page may fail to load — that is OK). "
+            "3) Copy the full address bar URL or just the code= value. "
+            "4) Submit it once; codes expire quickly and cannot be reused."
+        ),
     }
 
 
-def _extract_oauth_code(value: str) -> str:
-    """Accept either a bare authorization code or a full redirect URL."""
-    value = (value or "").strip()
-    if not value:
-        raise ValueError("Empty authorization code.")
-    if "code=" in value or value.startswith("http://") or value.startswith("https://"):
-        parsed = urlparse(value)
-        qs = parse_qs(parsed.query)
-        if "code" in qs and qs["code"]:
-            return qs["code"][0].strip()
-        frag = parse_qs(parsed.fragment)
-        if "code" in frag and frag["code"]:
-            return frag["code"][0].strip()
-        raise ValueError(
-            "Could not find a 'code' parameter in the pasted URL."
-        )
-    return value
-
-
-def _load_oauth_state() -> tuple[str, str, str | None]:
-    """Return (state, redirect_uri, code_verifier) from the pending auth file."""
-    state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
-    redirect_uri = _default_redirect_uri()
-    expected_state = ""
-    code_verifier = None
-    if state_path.is_file():
-        lines = state_path.read_text(encoding="utf-8").strip().splitlines()
-        if lines:
-            expected_state = lines[0].strip()
-        if len(lines) >= 2 and lines[1].strip():
-            redirect_uri = lines[1].strip()
-        if len(lines) >= 3 and lines[2].strip():
-            code_verifier = lines[2].strip()
-    return expected_state, redirect_uri, code_verifier
-
-
-def exchange_auth_code(code: str, state: str | None = None) -> dict[str, Any]:
-    """Exchange an authorization code for a refreshable token.json.
-
-    Used by both the server callback and the manual paste fallback.
-    """
+def exchange_auth_code(code: str) -> dict[str, Any]:
+    """Exchange an authorization code for a refreshable token.json."""
     _ensure_google()
     from google_auth_oauthlib.flow import Flow
 
@@ -295,30 +217,43 @@ def exchange_auth_code(code: str, state: str | None = None) -> dict[str, Any]:
     if not secrets_path.is_file():
         raise RuntimeError(f"Missing OAuth client secrets at {secrets_path}")
 
-    code = _extract_oauth_code(code)
-    expected_state, redirect_uri, code_verifier = _load_oauth_state()
-    if state and expected_state and state.strip() != expected_state:
-        raise ValueError("OAuth state mismatch — start authorization again.")
+    redirect_uri = _DEFAULT_REDIRECT_URI
+    if state_path.is_file():
+        lines = state_path.read_text(encoding="utf-8").strip().splitlines()
+        if len(lines) >= 2 and lines[1].strip():
+            redirect_uri = lines[1].strip()
+
+    clean_code = _normalize_auth_code(code)
 
     flow = Flow.from_client_secrets_file(
         str(secrets_path),
         scopes=GDRIVE_SCOPES,
         redirect_uri=redirect_uri,
     )
-    if code_verifier:
-        flow.code_verifier = code_verifier
+    try:
+        flow.fetch_token(code=clean_code)
+    except Exception as exc:
+        msg = str(exc)
+        if "invalid_grant" in msg.lower():
+            raise RuntimeError(
+                "invalid_grant: the authorization code is invalid, expired, or already used. "
+                "Click Get auth URL again, approve once, then paste the NEW code "
+                "(or the full http://localhost/?code=... URL) immediately. Do not reuse an old code."
+            ) from exc
+        raise
 
-    flow.fetch_token(code=code)
     creds = flow.credentials
+    if not creds.refresh_token:
+        raise RuntimeError(
+            "Google did not return a refresh_token. Revoke app access at "
+            "https://myaccount.google.com/permissions then run auth again with prompt=consent."
+        )
+
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     Path(GDRIVE_TOKEN_PATH).write_text(creds.to_json(), encoding="utf-8")
     if state_path.is_file():
         state_path.unlink(missing_ok=True)
-    return {
-        "authorized": True,
-        "token_path": str(GDRIVE_TOKEN_PATH),
-        "redirect_uri": redirect_uri,
-    }
+    return {"authorized": True, "token_path": str(GDRIVE_TOKEN_PATH)}
 
 
 def _service():
@@ -395,17 +330,12 @@ def list_folder_recursive(
     *,
     max_depth: int = 4,
     max_files: int = 2000,
-    prefix: str = "",
 ) -> list[dict[str, Any]]:
-    """Walk a folder tree and return downloadable file entries (not folders).
-
-    Nested folders are expanded up to max_depth. Google Workspace docs and
-    inaccessible items are skipped rather than failing the whole resolve.
-    """
+    """Walk nested folders; return downloadable binary files only."""
     out: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
+    seen: set[str] = set()
 
-    def walk(fid: str, depth: int, path_prefix: str) -> None:
+    def walk(fid: str, depth: int, prefix: str) -> None:
         if depth > max_depth or len(out) >= max_files:
             return
         try:
@@ -413,14 +343,13 @@ def list_folder_recursive(
         except Exception:
             return
         for c in children:
-            if c.id in seen_ids:
+            if c.id in seen:
                 continue
-            seen_ids.add(c.id)
-            display = f"{path_prefix}{c.name}" if path_prefix else c.name
+            seen.add(c.id)
+            display = f"{prefix}{c.name}" if prefix else c.name
             if c.is_folder:
                 walk(c.id, depth + 1, f"{display}/")
                 continue
-            # Skip Google Workspace native types (need export, not binary media).
             if (c.mime_type or "").startswith("application/vnd.google-apps."):
                 continue
             out.append(
@@ -432,22 +361,17 @@ def list_folder_recursive(
                     "is_folder": False,
                     "web_view_link": c.web_view_link,
                     "download_hint": f"drive://{c.id}",
-                    "path": display,
                 }
             )
             if len(out) >= max_files:
                 return
 
-    walk(folder_id, 0, prefix)
+    walk(folder_id, 0, "")
     return out
 
 
 def resolve_url(url: str, recursive: bool = True) -> dict[str, Any]:
-    """Resolve a Drive share URL into metadata and downloadable files.
-
-    When recursive is True (default), nested folders are expanded so the UI
-    can offer bulk select / download-all for an entire share.
-    """
+    """Resolve a Drive share URL into metadata and downloadable files."""
     ref = parse_drive_url(url)
     meta = get_item_metadata(ref.file_id)
     result: dict[str, Any] = {
@@ -460,7 +384,7 @@ def resolve_url(url: str, recursive: bool = True) -> dict[str, Any]:
         "web_view_link": meta.web_view_link,
         "kind": "folder" if meta.is_folder else "file",
         "files": [],
-        "skipped_folders": 0,
+        "file_count": 0,
     }
     if meta.is_folder:
         if recursive:
@@ -478,14 +402,12 @@ def resolve_url(url: str, recursive: bool = True) -> dict[str, Any]:
                     "download_hint": f"drive://{c.id}",
                 }
                 for c in children
+                if not c.is_folder
+                and not (c.mime_type or "").startswith("application/vnd.google-apps.")
             ]
-            result["skipped_folders"] = sum(1 for c in children if c.is_folder)
     else:
         if (meta.mime_type or "").startswith("application/vnd.google-apps."):
-            result["files"] = []
-            result["error"] = (
-                f"Google Workspace file ({meta.mime_type}) cannot be downloaded as binary."
-            )
+            result["error"] = f"Google Workspace file ({meta.mime_type}) cannot be downloaded as binary."
         else:
             result["files"] = [
                 {
