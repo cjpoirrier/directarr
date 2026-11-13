@@ -8,8 +8,6 @@ services:
     environment:
       TZ: America/Chicago
       DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:-change-this-long-random-key}
-      DIRECTARR_USERNAME: ${DIRECTARR_USERNAME:-admin}
-      DIRECTARR_PASSWORD: ${DIRECTARR_PASSWORD:-}
       DIRECTARR_CONFIG_DIR: /config
       DIRECTARR_DOWNLOAD_DIR: /downloads
       DIRECTARR_STAGING_DIR: /staging

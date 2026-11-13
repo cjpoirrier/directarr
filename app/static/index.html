@@ -82,10 +82,22 @@
       <section id="view-sources" class="view">
         <div class="panel">
           <div class="row between">
-            <h2>Sources</h2>
-            <button class="btn" id="reload-sources">Reload config</button>
+            <h2>Installed sources</h2>
+            <div class="row">
+              <button class="btn primary" id="add-source-btn" type="button">Add source</button>
+              <button class="btn" id="reload-sources" type="button">Reload</button>
+            </div>
           </div>
+          <p class="hint">Sources are like Prowlarr indexers: pick an adapter, set its options, then enable it for Search.</p>
           <div id="sources-table" class="table-wrap"></div>
+        </div>
+        <div class="panel hidden" id="add-source-panel">
+          <div class="row between">
+            <h2>Add source</h2>
+            <button class="btn sm" id="add-source-cancel" type="button">Cancel</button>
+          </div>
+          <div id="adapter-catalog" class="table-wrap"></div>
+          <div id="adapter-settings-form" class="hidden" style="margin-top:1rem"></div>
         </div>
       </section>
 

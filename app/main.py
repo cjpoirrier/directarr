@@ -13,7 +13,14 @@ from .db import connect, init_db
 from .downloader import enqueue, run_download
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
 from .parser import save_release
-from .sources import load_sources, set_source_enabled
+from .sources import (
+    add_source,
+    delete_source,
+    list_adapter_catalog,
+    list_sources_public,
+    load_sources,
+    set_source_enabled,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -108,23 +115,40 @@ async def json_search(
     return {"query": q, "count": len(saved), "releases": saved}
 
 
+@app.get("/api/v1/adapters")
+def list_adapters(x_api_key: str | None = Header(default=None)):
+    """Catalog of adapter types the user can add (Prowlarr-style)."""
+    require_key(x_api_key)
+    return list_adapter_catalog()
+
+
 @app.get("/api/v1/sources")
 def list_sources(x_api_key: str | None = Header(default=None)):
     require_key(x_api_key)
-    raw, _ = load_sources()
-    return [
-        {
-            "id": s.get("id"),
-            "name": s.get("name"),
-            "enabled": s.get("enabled", False),
-            "adapter": s.get("adapter"),
-        }
-        for s in raw
-    ]
+    return list_sources_public()
 
 
 class SourcePatch(BaseModel):
-    enabled: bool = Field(...)
+    enabled: bool | None = None
+
+
+class SourceCreate(BaseModel):
+    adapter: str = Field(min_length=1, max_length=64)
+    settings: dict = Field(default_factory=dict)
+    enabled: bool = True
+
+
+@app.post("/api/v1/sources", status_code=201)
+def create_source(body: SourceCreate, x_api_key: str | None = Header(default=None)):
+    require_key(x_api_key)
+    try:
+        return add_source(body.adapter, body.settings, enabled=body.enabled)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid source config: {exc}")
 
 
 @app.patch("/api/v1/sources/{source_id}")
@@ -135,7 +159,19 @@ def patch_source(
 ):
     require_key(x_api_key)
     try:
+        if body.enabled is None:
+            raise HTTPException(400, "enabled is required")
         return set_source_enabled(source_id, body.enabled)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.delete("/api/v1/sources/{source_id}")
+def remove_source(source_id: str, x_api_key: str | None = Header(default=None)):
+    require_key(x_api_key)
+    try:
+        delete_source(source_id)
+        return {"ok": True, "id": source_id}
     except KeyError as exc:
         raise HTTPException(404, str(exc))
 

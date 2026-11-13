@@ -288,26 +288,38 @@
     }
   }
 
+  let adapterCatalog = [];
+
   async function loadSources() {
     try {
       const rows = await api("/api/v1/sources");
       if (!rows.length) {
-        $("#sources-table").innerHTML = `<p class="muted">No sources in config/sources.json</p>`;
+        $("#sources-table").innerHTML = `<p class="muted">No sources installed. Click <strong>Add source</strong> to pick an adapter.</p>`;
         return;
       }
       $("#sources-table").innerHTML = `<table>
-        <thead><tr><th>Name</th><th>Adapter</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Adapter</th><th>URL</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          ${rows.map((s) => `<tr>
+          ${rows
+            .map(
+              (s) => `<tr>
             <td>${esc(s.name)}</td>
             <td><code>${esc(s.adapter)}</code></td>
-            <td>${s.enabled ? '<span class="pill ok">enabled</span>' : '<span class="pill muted">disabled</span>'}</td>
+            <td class="title muted">${esc(s.base_url || "")}</td>
+            <td>${
+              s.enabled
+                ? '<span class="pill ok">enabled</span>'
+                : '<span class="pill muted">disabled</span>'
+            }</td>
             <td class="actions">
               <button class="btn sm" data-toggle-id="${esc(s.id)}" data-enabled="${s.enabled ? "1" : "0"}">
                 ${s.enabled ? "Disable" : "Enable"}
               </button>
+              <button class="btn sm danger" data-delete-id="${esc(s.id)}">Remove</button>
             </td>
-          </tr>`).join("")}
+          </tr>`
+            )
+            .join("")}
         </tbody></table>`;
       $("#sources-table").querySelectorAll("[data-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
@@ -324,9 +336,115 @@
           }
         });
       });
+      $("#sources-table").querySelectorAll("[data-delete-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          if (!confirm("Remove this source?")) return;
+          try {
+            await api(`/api/v1/sources/${encodeURIComponent(btn.dataset.deleteId)}`, {
+              method: "DELETE",
+            });
+            toast("Source removed");
+            loadSources();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        });
+      });
     } catch (e) {
       toast(e.message, true);
     }
+  }
+
+  function showAddSourcePanel(show) {
+    const panel = $("#add-source-panel");
+    if (!panel) return;
+    panel.classList.toggle("hidden", !show);
+    if (show) loadAdapterCatalog();
+  }
+
+  async function loadAdapterCatalog() {
+    try {
+      adapterCatalog = await api("/api/v1/adapters");
+      const el = $("#adapter-catalog");
+      const form = $("#adapter-settings-form");
+      if (form) {
+        form.classList.add("hidden");
+        form.innerHTML = "";
+      }
+      el.innerHTML = `<table>
+        <thead><tr><th>Adapter</th><th>Description</th><th></th></tr></thead>
+        <tbody>
+          ${adapterCatalog
+            .map(
+              (a) => `<tr>
+            <td><strong>${esc(a.name)}</strong><div class="hint"><code>${esc(a.adapter)}</code></div></td>
+            <td class="muted">${esc(a.description || "")}</td>
+            <td class="actions"><button class="btn sm primary" data-adapter-id="${esc(a.id)}">Configure</button></td>
+          </tr>`
+            )
+            .join("")}
+        </tbody></table>`;
+      el.querySelectorAll("[data-adapter-id]").forEach((btn) => {
+        btn.addEventListener("click", () => openAdapterSettings(btn.dataset.adapterId));
+      });
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function openAdapterSettings(adapterId) {
+    const entry = adapterCatalog.find((a) => a.id === adapterId);
+    const form = $("#adapter-settings-form");
+    if (!entry || !form) return;
+    const fields = entry.settings || [];
+    form.classList.remove("hidden");
+    form.innerHTML = `
+      <h3 style="margin:0 0 0.75rem">Configure ${esc(entry.name)}</h3>
+      <form id="adapter-config-form">
+        ${fields
+          .map((f) => {
+            const id = `cfg-${f.name}`;
+            const val = f.default == null ? "" : f.default;
+            if (f.type === "boolean") {
+              return `<label class="row" style="gap:0.5rem;margin:0.5rem 0">
+                <input type="checkbox" id="${id}" data-fname="${esc(f.name)}" ${val ? "checked" : ""} />
+                <span>${esc(f.label || f.name)}</span>
+              </label>`;
+            }
+            const inputType = f.type === "number" ? "number" : f.type === "url" ? "url" : "text";
+            return `<label>${esc(f.label || f.name)}
+              <input id="${id}" data-fname="${esc(f.name)}" type="${inputType}" value="${esc(String(val))}" ${
+              f.required ? "required" : ""
+            } />
+              ${f.help ? `<span class="hint">${esc(f.help)}</span>` : ""}
+            </label>`;
+          })
+          .join("")}
+        <div class="row" style="margin-top:1rem">
+          <button class="btn primary" type="submit">Add & enable</button>
+        </div>
+      </form>`;
+    $("#adapter-config-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const settings = {};
+      form.querySelectorAll("[data-fname]").forEach((input) => {
+        const name = input.dataset.fname;
+        if (input.type === "checkbox") settings[name] = input.checked;
+        else if (input.type === "number") settings[name] = input.value === "" ? null : Number(input.value);
+        else settings[name] = input.value.trim();
+      });
+      try {
+        const created = await api("/api/v1/sources", {
+          method: "POST",
+          body: { adapter: entry.id, settings, enabled: true },
+        });
+        toast(`Added ${created.name || entry.name}`);
+        showAddSourcePanel(false);
+        loadSources();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
   }
 
   async function loadGdrive() {
@@ -449,6 +567,11 @@
       toast(e.message, true);
     }
   });
+
+  const addSourceBtn = $("#add-source-btn");
+  if (addSourceBtn) addSourceBtn.addEventListener("click", () => showAddSourcePanel(true));
+  const addSourceCancel = $("#add-source-cancel");
+  if (addSourceCancel) addSourceCancel.addEventListener("click", () => showAddSourcePanel(false));
 
   $("#gdrive-auth-url").addEventListener("click", async () => {
     try {
