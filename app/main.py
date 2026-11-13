@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import gdrive, torznab
+from . import gdrive, goindex, torznab
 from . import config
 from .config import set_api_key
 from .db import connect, init_db
@@ -376,3 +376,33 @@ def gdrive_resolve(
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(502, f"Drive API error: {exc}")
+
+
+@app.post("/api/v1/resolve")
+def resolve_share_url(
+    body: DriveResolveRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    """Resolve Google Drive, GoIndex folders, or open-interstitial links."""
+    require_key(x_api_key)
+    url = str(body.url)
+    try:
+        from .open_redirect import is_open_interstitial, resolve_interstitial, is_drive_url
+
+        if is_open_interstitial(url):
+            url = resolve_interstitial(url)
+        if goindex.is_goindex_url(url):
+            return goindex.resolve_url(url)
+        if is_drive_url(url) or "drive.google.com" in url or "docs.google.com" in url:
+            gdrive.parse_drive_url(url)
+            return gdrive.resolve_url(url)
+        raise ValueError(
+            "Unsupported share URL. Expected Google Drive or a GoIndex folder "
+            "(e.g. drive.kayoani.online)."
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Resolve error: {exc}")

@@ -160,6 +160,22 @@
     }
   }
 
+  function isGoIndexUrl(url) {
+    try {
+      const u = new URL(url);
+      const host = u.hostname.toLowerCase();
+      if (host === "drive.kayoani.online") return true;
+      // path like /0:/Folder/
+      return /^\/\d+:\//.test(u.pathname || "");
+    } catch {
+      return false;
+    }
+  }
+
+  function isResolvableUrl(url) {
+    return isDriveUrl(url) || isGoIndexUrl(url) || /\/open\/?\?id=/i.test(url || "");
+  }
+
   function closeQueueModal() {
     const modal = $("#queue-modal");
     if (modal) modal.classList.add("hidden");
@@ -207,30 +223,45 @@
       : $$(".queue-modal-check")
           .filter((c) => c.checked)
           .map((c) => Number(c.dataset.idx));
-    const files = indices
-      .map((i) => queueModalFiles[i])
-      .filter(Boolean)
-      .map((f) => ({ title: f.name, drive_file_id: f.id }));
-    if (!files.length) return toast("No files selected", true);
+    const selected = indices.map((i) => queueModalFiles[i]).filter(Boolean);
+    if (!selected.length) return toast("No files selected", true);
+
+    // Google Drive shares use bulk + drive_file_id; GoIndex uses per-file HTTPS URLs
+    const useDriveApi = isDriveUrl(queueModalShareUrl);
     try {
-      const res = await api("/api/v1/downloads/bulk", {
-        method: "POST",
-        body: { url: queueModalShareUrl, files },
-      });
-      const parts = [`Queued ${res.count} download(s)`];
-      if (res.skipped_count) parts.push(`${res.skipped_count} already in queue`);
-      toast(parts.join(" · "));
-      if (res.errors && res.errors.length) toast(`${res.errors.length} failed`, true);
+      if (useDriveApi) {
+        const files = selected.map((f) => ({ title: f.name, drive_file_id: f.id }));
+        const res = await api("/api/v1/downloads/bulk", {
+          method: "POST",
+          body: { url: queueModalShareUrl, files },
+        });
+        const parts = [`Queued ${res.count} download(s)`];
+        if (res.skipped_count) parts.push(`${res.skipped_count} already in queue`);
+        toast(parts.join(" · "));
+        if (res.errors && res.errors.length) toast(`${res.errors.length} failed`, true);
+        closeQueueModal();
+        if (res.count > 0) setView("downloads");
+        return;
+      }
+      let count = 0;
+      for (const f of selected) {
+        await api("/api/v1/downloads", {
+          method: "POST",
+          body: { title: f.name, url: f.url || queueModalShareUrl },
+        });
+        count += 1;
+      }
+      toast(`Queued ${count} download(s)`);
       closeQueueModal();
-      if (res.count > 0) setView("downloads");
+      setView("downloads");
     } catch (e) {
       toast(e.message, true);
     }
   }
 
   async function queueRelease(title, url) {
-    // Non-Drive: queue the URL as-is.
-    if (!isDriveUrl(url)) {
+    // Plain direct HTTPS: queue as-is
+    if (!isResolvableUrl(url)) {
       await api("/api/v1/downloads", {
         method: "POST",
         body: { title, url },
@@ -238,30 +269,33 @@
       toast("Queued download");
       return;
     }
-    // Drive: resolve on the backend, then queue or show file picker.
-    toast("Resolving Drive link…");
-    const data = await api("/api/v1/gdrive/resolve", {
+    toast("Resolving share link…");
+    const data = await api("/api/v1/resolve", {
       method: "POST",
       body: { url },
     });
     const files = (data.files || []).filter((f) => !f.is_folder);
     if (!files.length) {
-      throw new Error(data.error || "No downloadable files found in this Drive share");
+      throw new Error(data.error || "No downloadable files found in this share");
     }
+    const shareUrl = data.input_url || url;
     if (files.length === 1) {
-      await api("/api/v1/downloads", {
-        method: "POST",
-        body: {
-          title: files[0].name || title,
-          url,
-          drive_file_id: files[0].id,
-        },
-      });
-      toast("Queued Drive file");
+      const f = files[0];
+      const body = {
+        title: f.name || title,
+        url: f.url || shareUrl,
+      };
+      // Google Drive file ids only for real Drive API downloads
+      if (isDriveUrl(shareUrl) || isDriveUrl(f.url || "")) {
+        body.drive_file_id = f.id;
+        body.url = shareUrl;
+      }
+      await api("/api/v1/downloads", { method: "POST", body });
+      toast("Queued file");
       setView("downloads");
       return;
     }
-    openQueueModal(data.name || title, url, files);
+    openQueueModal(data.name || title, shareUrl, files);
   }
 
   function renderReleasesTable(el, rows, { queue = false } = {}) {
@@ -274,7 +308,7 @@
       <tbody>
         ${rows
           .map((r) => {
-            const drive = isDriveUrl(r.url || "");
+            const resolvable = isResolvableUrl(r.url || "");
             return `<tr>
           <td class="title">${esc(r.title)}</td>
           <td>${esc(r.source || "")}</td>
