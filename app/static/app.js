@@ -4,7 +4,8 @@
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
   function apiKey() {
-    return localStorage.getItem(KEY) || $("#api-key").value.trim();
+    const el = $("#api-key");
+    return localStorage.getItem(KEY) || (el && el.value.trim()) || "";
   }
 
   function toast(msg, isErr) {
@@ -341,10 +342,30 @@
     }
   }
 
-  function updateSettings() {
-    const key = apiKey() || "YOUR_KEY";
-    const host = location.origin;
-    $("#torznab-url").textContent = `${host}/api?apikey=${key}`;
+  async function updateSettings() {
+    try {
+      const data = await api("/api/v1/settings/security");
+      const key = data.api_key || "";
+      const host = location.origin;
+      const keyEl = $("#api-key");
+      if (keyEl) keyEl.value = key;
+      const urlEl = $("#torznab-url");
+      if (urlEl) {
+        urlEl.textContent = `${host}${data.torznab_path || "/api"}?apikey=${key || "YOUR_KEY"}`;
+      }
+      if (key) localStorage.setItem(KEY, key);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  async function copyText(value, label) {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast(label + " copied");
+    } catch {
+      toast("Could not copy — select and copy manually", true);
+    }
   }
 
   // Navigation
@@ -352,13 +373,55 @@
 
   // API key
   const saved = localStorage.getItem(KEY);
-  if (saved) $("#api-key").value = saved;
-  $("#save-key").addEventListener("click", () => {
-    localStorage.setItem(KEY, $("#api-key").value.trim());
-    toast("API key saved in this browser");
-    loadDashboard();
-    updateSettings();
-  });
+  const keyEl = $("#api-key");
+  if (saved && keyEl) keyEl.value = saved;
+
+  const copyApiBtn = $("#copy-api-key");
+  if (copyApiBtn) {
+    copyApiBtn.addEventListener("click", () => {
+      const key = (keyEl && keyEl.value.trim()) || apiKey();
+      if (!key) return toast("No API key loaded", true);
+      copyText(key, "API key");
+    });
+  }
+
+  const copyTorzBtn = $("#copy-torznab");
+  if (copyTorzBtn) {
+    copyTorzBtn.addEventListener("click", () => {
+      const urlEl = $("#torznab-url");
+      const url = (urlEl && urlEl.textContent.trim()) || "";
+      if (!url) return toast("No Torznab URL", true);
+      copyText(url, "Torznab URL");
+    });
+  }
+
+  const refreshSettingsBtn = $("#refresh-settings");
+  if (refreshSettingsBtn) {
+    refreshSettingsBtn.addEventListener("click", () => {
+      updateSettings();
+      toast("Settings refreshed");
+    });
+  }
+
+  const regenBtn = $("#regen-api-key");
+  if (regenBtn) {
+    regenBtn.addEventListener("click", async () => {
+      if (!confirm("Regenerate API key? Sonarr/Radarr indexers must be updated with the new key.")) return;
+      try {
+        const data = await api("/api/v1/settings/api-key/regenerate", { method: "POST" });
+        if (keyEl) keyEl.value = data.api_key || "";
+        if (data.api_key) localStorage.setItem(KEY, data.api_key);
+        const host = location.origin;
+        const urlEl = $("#torznab-url");
+        if (urlEl) {
+          urlEl.textContent = `${host}${data.torznab_path || "/api"}?apikey=${data.api_key || "YOUR_KEY"}`;
+        }
+        toast("API key regenerated");
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  }
 
   $("#search-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();

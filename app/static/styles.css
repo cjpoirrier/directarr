@@ -140,3 +140,61 @@ td.actions { white-space: nowrap; }
   overflow: auto;
 }
 .modal-card h2 { margin: 0; font-size: 1.1rem; }
+
+/* Settings (Sonarr-style) */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 1rem 1.25rem;
+  align-items: start;
+}
+.settings-label {
+  padding-top: 0.65rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: right;
+}
+.settings-field .hint { margin: 0.4rem 0 0; }
+.api-key-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.api-key-row input {
+  flex: 1;
+  min-width: 180px;
+  background: #0b1018;
+  border: 1px solid var(--border, #2a3548);
+  color: var(--text, #e7ecf3);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+}
+.api-key-row .url-box {
+  flex: 1;
+  min-width: 180px;
+  display: block;
+  padding: 0.55rem 0.75rem;
+  background: #0b1018;
+  border: 1px solid var(--border, #2a3548);
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+.btn.icon-btn {
+  padding: 0.5rem 0.75rem;
+  white-space: nowrap;
+}
+.btn.danger {
+  background: #7f1d1d;
+  border-color: #991b1b;
+  color: #fecaca;
+}
+.btn.danger:hover { filter: brightness(1.15); }
+@media (max-width: 700px) {
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-label { text-align: left; padding-top: 0; }
+}

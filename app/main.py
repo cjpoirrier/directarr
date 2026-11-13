@@ -7,7 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import gdrive, torznab
-from .config import API_KEY
+from . import config
+from .config import set_api_key
 from .db import connect, init_db
 from .downloader import enqueue, run_download
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
@@ -32,7 +33,7 @@ def startup():
 
 
 def require_key(key):
-    if not key or not hmac.compare_digest(key, API_KEY):
+    if not key or not hmac.compare_digest(key, config.API_KEY):
         raise HTTPException(401, "Invalid API key")
 
 
@@ -253,6 +254,30 @@ def download_status(job_id: str, x_api_key: str | None = Header(default=None)):
     if row is None:
         raise HTTPException(404, "Job not found")
     return dict(row)
+
+
+@app.get("/api/v1/settings/security")
+def settings_security(x_api_key: str | None = Header(default=None)):
+    """Sonarr-style security settings: current API key for Torznab clients."""
+    require_key(x_api_key)
+    return {
+        "api_key": config.API_KEY,
+        "torznab_path": "/api",
+    }
+
+
+@app.post("/api/v1/settings/api-key/regenerate")
+def settings_regenerate_api_key(x_api_key: str | None = Header(default=None)):
+    """Generate a new API key and persist it under config/api_key.txt."""
+    require_key(x_api_key)
+    import secrets
+    new_key = secrets.token_hex(20)
+    set_api_key(new_key)
+    return {
+        "api_key": config.API_KEY,
+        "torznab_path": "/api",
+        "message": "API key regenerated. Update Sonarr/Radarr indexers with the new key.",
+    }
 
 
 @app.get("/api/v1/gdrive/status")

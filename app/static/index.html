@@ -33,10 +33,6 @@
     <main class="main">
       <header class="topbar">
         <h1 id="view-title">Dashboard</h1>
-        <div class="top-actions">
-          <input id="api-key" type="password" placeholder="API key" autocomplete="off" />
-          <button id="save-key" class="btn">Save key</button>
-        </div>
       </header>
 
       <section id="view-dashboard" class="view active">
@@ -116,10 +112,28 @@
 
       <section id="view-settings" class="view">
         <div class="panel">
-          <h2>Connection</h2>
-          <p>Torznab URL (for Sonarr):</p>
-          <code id="torznab-url">http://localhost:8787/api?apikey=YOUR_KEY</code>
-          <p class="hint" style="margin-top:1rem">API docs: <a href="/docs" target="_blank">/docs</a></p>
+          <h2>Security</h2>
+          <div class="settings-grid">
+            <div class="settings-label">API Key</div>
+            <div class="settings-field">
+              <div class="api-key-row">
+                <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
+                <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+              </div>
+              <p class="hint">Used by Sonarr/Radarr Torznab indexers. Regenerating invalidates the old key immediately.</p>
+            </div>
+
+            <div class="settings-label">Torznab URL</div>
+            <div class="settings-field">
+              <div class="api-key-row">
+                <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
+                <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
+                <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+              </div>
+              <p class="hint">Paste this into Sonarr as a Torznab indexer. API docs: <a href="/docs" target="_blank">/docs</a></p>
+            </div>
+          </div>
         </div>
       </section>
     </main>

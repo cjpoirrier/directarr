@@ -35,25 +35,17 @@ API_KEY = _load_api_key()
 
 
 def set_api_key(new_key: str) -> str:
-    """Persist a new API key (Sonarr-style regenerate) and update the in-memory value."""
+    """Persist a new API key (Sonarr-style regenerate) and update in-memory value."""
     global API_KEY
     new_key = (new_key or "").strip()
     if len(new_key) < 16:
         raise ValueError("API key must be at least 16 characters")
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    API_KEY_FILE.write_text(new_key + "\n", encoding="utf-8")
+    API_KEY_FILE.write_text(new_key + chr(10), encoding="utf-8")
     API_KEY = new_key
     return API_KEY
 
 
-# Web UI forms login (Sonarr/Radarr-style). Leave password empty to disable UI auth.
-AUTH_USERNAME = os.getenv("DIRECTARR_USERNAME", "admin")
-AUTH_PASSWORD = os.getenv("DIRECTARR_PASSWORD", "")
-SESSION_SECRET = (
-    os.getenv("DIRECTARR_SESSION_SECRET")
-    or os.getenv("DIRECTARR_API_KEY")
-    or "change-this-long-random-key"
-)
 MAX_DOWNLOAD_BYTES = int(os.getenv("DIRECTARR_MAX_DOWNLOAD_MB", "20000")) * 1024 * 1024
 ALLOWED_HOSTS = {
     v.strip().lower()
@@ -76,11 +68,3 @@ GDRIVE_SCOPES = [
     ).split(",")
     if s.strip()
 ]
-# Public base URL of this Directarr instance (no trailing slash), e.g.
-# http://10.0.0.93:8787 — used to build the OAuth callback so Google returns
-# the code to the backend and the user never pastes it.
-PUBLIC_BASE_URL = (os.getenv("DIRECTARR_PUBLIC_URL") or "").rstrip("/")
-GDRIVE_REDIRECT_URI = (
-    os.getenv("DIRECTARR_GDRIVE_REDIRECT_URI")
-    or (f"{PUBLIC_BASE_URL}/api/v1/gdrive/callback" if PUBLIC_BASE_URL else "")
-)
