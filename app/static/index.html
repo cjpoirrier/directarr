@@ -106,25 +106,30 @@
 
       <section id="view-gdrive" class="view">
         <div class="panel">
-          <h2>Authorization</h2>
+          <h2>Google Drive authorization</h2>
           <div id="gdrive-status" class="muted">Loading...</div>
-          <div style="margin-top:1rem; display:flex; flex-direction:column; gap:0.75rem; max-width:40rem">
-            <div class="row">
-              <button class="btn" id="gdrive-auth-url">1. Open Google auth</button>
+          <div id="gdrive-auth-panel" class="gdrive-auth-panel hidden">
+            <ol class="auth-steps">
+              <li>Ensure <code>config/credentials.json</code> is a Desktop OAuth client with redirect <code>http://localhost</code>.</li>
+              <li>Click <strong>Connect Google Drive</strong> and sign in with the account that can open the shares.</li>
+              <li>After Allow, the browser shows "localhost refused to connect" — that is expected.</li>
+              <li>Copy the <strong>entire address bar</strong>, paste it below, and click Finish.</li>
+            </ol>
+            <div class="row" style="margin-top:0.75rem; flex-wrap:wrap">
+              <button class="btn primary" id="gdrive-auth-url" type="button">Connect Google Drive</button>
+              <button class="btn" id="gdrive-disconnect" type="button">Disconnect</button>
             </div>
-            <div class="row">
-              <input id="gdrive-code" type="text" placeholder="2. Paste full localhost URL or code here" />
-              <button class="btn primary" id="gdrive-auth-code">3. Submit</button>
+            <div class="row" style="margin-top:0.75rem">
+              <input id="gdrive-code" type="text" placeholder="Paste full http://localhost/?code=... URL here" />
+              <button class="btn primary" id="gdrive-auth-code" type="button">Finish authorization</button>
             </div>
+            <p class="hint" id="gdrive-hint">You only need to do this once until the token expires or is revoked.</p>
+            <p id="gdrive-auth-feedback" class="hint"></p>
           </div>
-          <p class="hint" id="gdrive-hint">
-            Place Desktop OAuth client JSON at <code>config/credentials.json</code> first.
-            After you click Allow, the browser shows "localhost refused to connect" — that is normal.
-            Copy the <strong>entire address bar</strong> and paste it above, then click Submit.
-          </p>
         </div>
         <div class="panel">
           <h2>Resolve share link</h2>
+          <p class="hint">Paste a Drive file or folder URL. Nested folders are expanded so you can select individual files or download everything.</p>
           <form id="resolve-form" class="row">
             <input id="resolve-url" type="url" placeholder="https://drive.google.com/drive/folders/..." required />
             <button class="btn primary" type="submit">Resolve</button>

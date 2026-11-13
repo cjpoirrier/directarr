@@ -300,22 +300,48 @@ async def add_downloads_bulk(
     background_tasks: BackgroundTasks,
     _auth=Depends(require_auth),
 ):
-    """Queue multiple Drive files from a share link in one request."""
+    """Queue multiple Drive files from a share link in one request.
+
+    Skips files that already have an active (queued/downloading) or completed
+    job with the same drive_file_id to avoid accidental duplicates.
+    """
     queued = []
     errors = []
+    skipped = []
+    existing_ids: set[str] = set()
+    with connect() as db:
+        rows = db.execute(
+            "SELECT drive_file_id, status FROM downloads "
+            "WHERE drive_file_id IS NOT NULL AND status IN ('queued','downloading','completed')"
+        ).fetchall()
+        for row in rows:
+            fid = row["drive_file_id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
+            if fid:
+                existing_ids.add(str(fid))
+
     for item in body.files:
         title = (item.get("title") or item.get("name") or "").strip()
         file_id = (item.get("drive_file_id") or item.get("id") or "").strip()
         if not title or not file_id:
             errors.append({"item": item, "error": "title and drive_file_id required"})
             continue
+        if file_id in existing_ids:
+            skipped.append({"title": title, "drive_file_id": file_id, "reason": "already queued or completed"})
+            continue
         try:
             job_id = enqueue(title, body.url, drive_file_id=file_id)
             background_tasks.add_task(run_download, job_id, title, body.url, file_id)
             queued.append({"id": job_id, "title": title, "drive_file_id": file_id})
+            existing_ids.add(file_id)
         except ValueError as exc:
             errors.append({"title": title, "error": str(exc)})
-    return {"queued": queued, "errors": errors, "count": len(queued)}
+    return {
+        "queued": queued,
+        "errors": errors,
+        "skipped": skipped,
+        "count": len(queued),
+        "skipped_count": len(skipped),
+    }
 
 
 @app.get("/api/v1/downloads")
@@ -368,6 +394,12 @@ async def retry_download(
 @app.get("/api/v1/gdrive/status")
 def gdrive_status(_auth=Depends(require_auth)):
     return gdrive.credentials_status()
+
+
+@app.post("/api/v1/gdrive/disconnect")
+def gdrive_disconnect(_auth=Depends(require_auth)):
+    """Clear stored Drive token so the account can be reauthorized."""
+    return gdrive.disconnect()
 
 
 @app.get("/api/v1/gdrive/auth-url")

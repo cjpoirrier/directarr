@@ -106,15 +106,51 @@ def is_drive_url(url: str) -> bool:
 
 
 def credentials_status() -> dict[str, Any]:
+    """Report OAuth setup and whether the stored token still works."""
     secrets = Path(GDRIVE_CLIENT_SECRETS)
     token = Path(GDRIVE_TOKEN_PATH)
+    authorized = False
+    token_valid = False
+    needs_reauth = False
+    error = None
+    if secrets.is_file() and token.is_file():
+        try:
+            _load_credentials()
+            authorized = True
+            token_valid = True
+        except Exception as exc:
+            needs_reauth = True
+            error = str(exc)
+            # Token file exists but is expired/revoked/broken.
+            authorized = False
     return {
         "client_secrets_present": secrets.is_file(),
         "token_present": token.is_file(),
         "client_secrets_path": str(secrets),
         "token_path": str(token),
         "scopes": list(GDRIVE_SCOPES),
-        "authorized": token.is_file() and secrets.is_file(),
+        "authorized": authorized,
+        "token_valid": token_valid,
+        "needs_reauth": needs_reauth,
+        "error": error,
+    }
+
+
+def disconnect() -> dict[str, Any]:
+    """Remove stored OAuth token so the operator can reauthorize cleanly."""
+    token = Path(GDRIVE_TOKEN_PATH)
+    state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
+    removed_token = False
+    if token.is_file():
+        token.unlink()
+        removed_token = True
+    if state_path.is_file():
+        state_path.unlink(missing_ok=True)
+    return {
+        "authorized": False,
+        "disconnected": removed_token,
+        "token_present": False,
+        "message": "Google Drive disconnected. Run authorization again to reconnect.",
     }
 
 

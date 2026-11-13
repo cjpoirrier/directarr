@@ -299,3 +299,17 @@ progress, .bar {
   .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
   nav { flex-direction: row; flex-wrap: wrap; }
 }
+
+
+/* Google Drive auth guidance */
+.gdrive-auth-panel { margin-top: 1rem; max-width: 42rem; }
+.auth-steps {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+.auth-steps li { margin: 0.25rem 0; }
+.auth-steps code { font-size: 0.85em; }
+#gdrive-auth-feedback { margin-top: 0.75rem; min-height: 1.25rem; }

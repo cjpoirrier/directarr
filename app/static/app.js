@@ -118,16 +118,52 @@
     manageDownloadPolling();
   }
 
+  let lastDownloads = [];
+
+  function downloadsAreActive(rows) {
+    return (rows || []).some((r) => {
+      const s = (r.status || "").toLowerCase();
+      return s === "queued" || s === "downloading";
+    });
+  }
+
+  function updateAutoRefreshLabel(active) {
+    const label = $("#auto-refresh-label");
+    if (!label || currentView !== "downloads") return;
+    label.textContent = active ? "Auto-refresh on (live)" : "Auto-refresh on (idle)";
+  }
+
   function manageDownloadPolling() {
-    clearInterval(downloadPollTimer);
-    downloadPollTimer = null;
-    // Poll while on downloads view, or on dashboard when there may be active jobs.
-    if (currentView === "downloads" || currentView === "dashboard") {
-      downloadPollTimer = setInterval(() => {
-        if (currentView === "downloads") loadDownloads({ silent: true });
-        else if (currentView === "dashboard") loadDashboard({ silent: true });
-      }, 2500);
+    if (downloadPollTimer) {
+      clearTimeout(downloadPollTimer);
+      downloadPollTimer = null;
     }
+    if (currentView !== "downloads" && currentView !== "dashboard") return;
+
+    const tick = async () => {
+      try {
+        if (currentView === "downloads") await loadDownloads({ silent: true });
+        else if (currentView === "dashboard") await loadDashboard({ silent: true });
+      } finally {
+        scheduleNext();
+      }
+    };
+
+    const scheduleNext = () => {
+      if (downloadPollTimer) {
+        clearTimeout(downloadPollTimer);
+        downloadPollTimer = null;
+      }
+      if (currentView !== "downloads" && currentView !== "dashboard") return;
+      const active = downloadsAreActive(lastDownloads);
+      updateAutoRefreshLabel(active);
+      let delay = 5000;
+      if (currentView === "downloads") delay = active ? 1500 : 4000;
+      else if (currentView === "dashboard") delay = active ? 2500 : 8000;
+      downloadPollTimer = setTimeout(tick, delay);
+    };
+
+    tick();
   }
 
   async function loadDashboard({ silent } = {}) {
@@ -142,7 +178,8 @@
       $("#stat-releases").textContent = String(releases.length);
       $("#stat-downloads").textContent = String(downloads.length);
       $("#stat-gdrive").textContent = gdrive.authorized ? "Authorized" : "Not authorized";
-      renderDownloadsTable($("#dash-downloads"), downloads.slice(0, 8));
+      lastDownloads = downloads || [];
+      renderDownloadsTable($("#dash-downloads"), lastDownloads.slice(0, 8));
     } catch (e) {
       if (!silent) {
         $("#conn-status").textContent = e.message;
@@ -264,7 +301,9 @@
   async function loadDownloads({ silent } = {}) {
     try {
       const rows = await api("/api/v1/downloads");
-      renderDownloadsTable($("#downloads-table"), rows);
+      lastDownloads = rows || [];
+      renderDownloadsTable($("#downloads-table"), lastDownloads);
+      updateAutoRefreshLabel(downloadsAreActive(lastDownloads));
     } catch (e) {
       if (!silent) toast(e.message, true);
     }
@@ -322,27 +361,36 @@
   }
 
   async function loadGdrive() {
+    const panel = $("#gdrive-auth-panel");
     try {
       const st = await api("/api/v1/gdrive/status");
-      $("#gdrive-status").innerHTML = `
-        <div>Client secrets: ${
-          st.client_secrets_present
-            ? '<span class="pill ok">present</span>'
-            : '<span class="pill err">missing</span>'
-        }</div>
-        <div style="margin-top:0.35rem">Token: ${
-          st.token_present
-            ? '<span class="pill ok">present</span>'
-            : '<span class="pill warn">missing</span>'
-        }</div>
-        <div style="margin-top:0.35rem">Authorized: ${
-          st.authorized
-            ? '<span class="pill ok">yes</span>'
-            : '<span class="pill muted">no</span>'
-        }</div>
-        <div class="hint">${esc(st.client_secrets_path)}</div>`;
+      let statusHtml = "";
+      if (!st.client_secrets_present) {
+        statusHtml =
+          '<div><span class="pill err">Not configured</span></div>' +
+          '<p class="hint" style="margin-top:0.5rem">Place a Desktop OAuth client JSON at <code>' +
+          esc(st.client_secrets_path) +
+          "</code>, then connect.</p>";
+      } else if (st.authorized && st.token_valid) {
+        statusHtml =
+          '<div><span class="pill ok">Connected</span> Google Drive is authorized and the token is valid.</div>' +
+          '<p class="hint" style="margin-top:0.5rem">Resolve share links below. Use Disconnect to switch accounts.</p>';
+      } else if (st.needs_reauth || st.token_present) {
+        statusHtml =
+          '<div><span class="pill warn">Reauthorization needed</span></div>' +
+          '<p class="hint" style="margin-top:0.5rem">' +
+          esc(st.error || "Stored token is expired or revoked.") +
+          "</p>";
+      } else {
+        statusHtml =
+          '<div><span class="pill muted">Not authorized</span></div>' +
+          '<p class="hint" style="margin-top:0.5rem">Connect a Google account that can open the shared Drive links.</p>';
+      }
+      $("#gdrive-status").innerHTML = statusHtml;
+      if (panel) panel.classList.remove("hidden");
     } catch (e) {
       $("#gdrive-status").textContent = e.message;
+      if (panel) panel.classList.remove("hidden");
     }
   }
 
@@ -452,10 +500,13 @@
         method: "POST",
         body: { url: resolveShareUrl, files },
       });
-      toast(`Queued ${res.count} download(s)`);
+      const parts = [`Queued ${res.count} download(s)`];
+      if (res.skipped_count) parts.push(`${res.skipped_count} skipped (already in queue)`);
+      toast(parts.join(" · "));
       if (res.errors && res.errors.length) {
         toast(`${res.errors.length} failed to queue`, true);
       }
+      if (res.count > 0) setView("downloads");
     } catch (e) {
       toast(e.message, true);
     }
@@ -574,34 +625,52 @@
   });
 
   $("#gdrive-auth-url").addEventListener("click", async () => {
+    const feedback = $("#gdrive-auth-feedback");
     try {
       const r = await api("/api/v1/gdrive/auth-url");
       window.open(r.auth_url, "_blank", "noopener");
-      toast("Browser opened — after Allow, copy the full address bar and paste it below");
-      const hint = $("#gdrive-hint");
-      if (hint) {
-        hint.innerHTML =
-          'After you click <strong>Allow</strong>, the browser will show "localhost refused to connect". ' +
-          "That is expected. Copy the <strong>entire address bar</strong> " +
-          "(it starts with <code>http://localhost/?code=...</code>) and paste it into the box, then click Submit.";
+      toast("Google sign-in opened — finish in the new tab, then paste the localhost URL here");
+      if (feedback) {
+        feedback.innerHTML =
+          "Waiting for the authorization code. After Allow, copy the full <code>http://localhost/?code=...</code> URL from the address bar.";
       }
     } catch (e) {
       toast(e.message, true);
+      if (feedback) feedback.textContent = e.message;
     }
   });
 
   $("#gdrive-auth-code").addEventListener("click", async () => {
     const code = $("#gdrive-code").value.trim();
+    const feedback = $("#gdrive-auth-feedback");
     if (!code) return toast("Paste the full localhost URL (or the code) first", true);
     try {
       await api("/api/v1/gdrive/auth-code", { method: "POST", body: { code } });
-      toast("Google Drive authorized");
+      toast("Google Drive connected");
       $("#gdrive-code").value = "";
+      if (feedback) feedback.innerHTML = '<span class="pill ok">Connected</span> Authorization succeeded.';
       loadGdrive();
     } catch (e) {
       toast(e.message, true);
+      if (feedback) feedback.innerHTML = '<span class="pill err">Failed</span> ' + esc(e.message);
     }
   });
+
+  const disconnectBtn = $("#gdrive-disconnect");
+  if (disconnectBtn) {
+    disconnectBtn.addEventListener("click", async () => {
+      if (!confirm("Disconnect Google Drive? You will need to authorize again to resolve shares.")) return;
+      try {
+        await api("/api/v1/gdrive/disconnect", { method: "POST" });
+        toast("Google Drive disconnected");
+        const feedback = $("#gdrive-auth-feedback");
+        if (feedback) feedback.textContent = "Disconnected. Connect again when ready.";
+        loadGdrive();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  }
 
   $("#resolve-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
