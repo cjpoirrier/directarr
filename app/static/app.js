@@ -318,7 +318,7 @@
             ${
               queue
                 ? `<button class="btn sm primary" data-queue-title="${esc(r.title)}" data-queue-url="${esc(r.url)}">${
-                    drive ? "Queue / Resolve" : "Queue"
+                    resolvable ? "Queue / Resolve" : "Queue"
                   }</button>`
                 : ""
             }
