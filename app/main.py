@@ -16,6 +16,7 @@ from .parser import save_release
 from .sources import (
     add_source,
     delete_source,
+    update_source_settings,
     list_adapter_catalog,
     list_sources_public,
     load_sources,
@@ -122,6 +123,15 @@ def list_adapters(x_api_key: str | None = Header(default=None)):
     return list_adapter_catalog()
 
 
+@app.get("/api/v1/sources/{source_id}")
+def get_source(source_id: str, x_api_key: str | None = Header(default=None)):
+    require_key(x_api_key)
+    for s in list_sources_public():
+        if s.get("id") == source_id:
+            return s
+    raise HTTPException(404, f"Source not found: {source_id}")
+
+
 @app.get("/api/v1/sources")
 def list_sources(x_api_key: str | None = Header(default=None)):
     require_key(x_api_key)
@@ -130,6 +140,7 @@ def list_sources(x_api_key: str | None = Header(default=None)):
 
 class SourcePatch(BaseModel):
     enabled: bool | None = None
+    settings: dict | None = None
 
 
 class SourceCreate(BaseModel):
@@ -159,11 +170,18 @@ def patch_source(
 ):
     require_key(x_api_key)
     try:
-        if body.enabled is None:
-            raise HTTPException(400, "enabled is required")
-        return set_source_enabled(source_id, body.enabled)
+        result = None
+        if body.settings is not None:
+            result = update_source_settings(source_id, body.settings)
+        if body.enabled is not None:
+            result = set_source_enabled(source_id, body.enabled)
+        if result is None:
+            raise HTTPException(400, "Provide enabled and/or settings")
+        return result
     except KeyError as exc:
         raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.delete("/api/v1/sources/{source_id}")

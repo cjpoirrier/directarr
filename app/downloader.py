@@ -32,6 +32,18 @@ from .db import connect
 USER_AGENT = "Directarr/0.2"
 
 
+def _reject_non_file_response(response: httpx.Response, url: str) -> None:
+    """Block saving HTML/JSON error pages as completed media files."""
+    ct = (response.headers.get("content-type") or "").lower()
+    if any(x in ct for x in ("text/html", "application/xhtml", "text/xml", "application/json")):
+        raise ValueError(
+            f"URL returned {ct or 'non-file'} instead of a downloadable file. "
+            "This is usually a web page or interstitial, not the video. "
+            "Use a source with 'Follow posts' enabled so search returns Drive/open links, "
+            f"not the post page. URL: {url[:180]}"
+        )
+
+
 def safe_move(src: Path, dest: Path) -> Path:
     """Move src to dest; on cross-device (EXDEV) copy + verify + unlink."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +258,9 @@ async def _download_http_single(
             response.raise_for_status()
         elif not existing:
             response.raise_for_status()
+
+        if not existing:
+            _reject_non_file_response(response, url)
 
         if known_size is None:
             cl = response.headers.get("content-length")

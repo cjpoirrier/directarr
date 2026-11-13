@@ -382,6 +382,7 @@
                 : '<span class="pill muted">disabled</span>'
             }</td>
             <td class="actions">
+              <button class="btn sm" data-edit-id="${esc(s.id)}">Edit</button>
               <button class="btn sm" data-toggle-id="${esc(s.id)}" data-enabled="${s.enabled ? "1" : "0"}">
                 ${s.enabled ? "Disable" : "Enable"}
               </button>
@@ -419,6 +420,88 @@
             toast(e.message, true);
           }
         });
+      });
+      $("#sources-table").querySelectorAll("[data-edit-id]").forEach((btn) => {
+        btn.addEventListener("click", () => editSource(btn.dataset.editId));
+      });
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function flattenSettingsForForm(settings) {
+    const flat = { ...(settings || {}) };
+    const sel = flat.selectors || {};
+    if (sel.result) flat.selector_result = sel.result;
+    if (sel.title) flat.selector_title = sel.title;
+    if (sel.url) flat.selector_url = sel.url;
+    if (sel.date) flat.selector_date = sel.date;
+    if (sel.drive_link) flat.selector_drive_link = sel.drive_link;
+    return flat;
+  }
+
+  async function editSource(sourceId) {
+    try {
+      if (!adapterCatalog.length) {
+        adapterCatalog = await api("/api/v1/adapters");
+      }
+      const source = await api(`/api/v1/sources/${encodeURIComponent(sourceId)}`);
+      const entry =
+        adapterCatalog.find((a) => a.adapter === source.adapter) ||
+        adapterCatalog.find((a) => a.id === source.adapter) ||
+        adapterCatalog[0];
+      if (!entry) return toast("No adapter schema available to edit", true);
+      showAddSourcePanel(true);
+      const form = $("#adapter-settings-form");
+      const values = flattenSettingsForForm(source.settings || source);
+      form.classList.remove("hidden");
+      const fields = entry.settings || [];
+      form.innerHTML = `
+        <h3 style="margin:0 0 0.75rem">Edit ${esc(source.name || sourceId)}</h3>
+        <form id="adapter-config-form">
+          ${fields
+            .map((f) => {
+              const id = `cfg-${f.name}`;
+              let val = values[f.name];
+              if (val == null) val = f.default == null ? "" : f.default;
+              if (f.type === "boolean") {
+                return `<label class="row" style="gap:0.5rem;margin:0.5rem 0">
+                  <input type="checkbox" id="${id}" data-fname="${esc(f.name)}" ${val ? "checked" : ""} />
+                  <span>${esc(f.label || f.name)}</span>
+                </label>`;
+              }
+              const inputType = f.type === "number" ? "number" : f.type === "url" ? "url" : "text";
+              return `<label>${esc(f.label || f.name)}
+                <input id="${id}" data-fname="${esc(f.name)}" type="${inputType}" value="${esc(String(val))}" />
+                ${f.help ? `<span class="hint">${esc(f.help)}</span>` : ""}
+              </label>`;
+            })
+            .join("")}
+          <div class="row" style="margin-top:1rem">
+            <button class="btn primary" type="submit">Save changes</button>
+          </div>
+        </form>`;
+      $("#adapter-config-form").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const settings = {};
+        form.querySelectorAll("[data-fname]").forEach((input) => {
+          const name = input.dataset.fname;
+          if (input.type === "checkbox") settings[name] = input.checked;
+          else if (input.type === "number")
+            settings[name] = input.value === "" ? null : Number(input.value);
+          else settings[name] = input.value.trim();
+        });
+        try {
+          await api(`/api/v1/sources/${encodeURIComponent(sourceId)}`, {
+            method: "PATCH",
+            body: { settings },
+          });
+          toast("Source updated");
+          showAddSourcePanel(false);
+          loadSources();
+        } catch (e) {
+          toast(e.message, true);
+        }
       });
     } catch (e) {
       toast(e.message, true);

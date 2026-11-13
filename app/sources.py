@@ -26,50 +26,26 @@ ADAPTERS: dict[str, type] = {
 # Catalog shown in "Add source" UI (like Prowlarr's indexer list)
 ADAPTER_CATALOG: list[dict[str, Any]] = [
     {
-        "id": "kayoanime",
-        "name": "KayoAnime",
-        "adapter": "kayoanime",
+        "id": "animekaizen",
+        "name": "AnimeKaizen",
+        "adapter": "generic_html",
         "description": (
-            "Searches kayoanime.com (or a mirror), opens release posts, and "
-            "extracts Google Drive share links."
+            "www.animekaizen.org — searches posts and extracts a4u/open download links. "
+            "Enable Follow posts so results are real download URLs, not empty HTML pages."
         ),
         "settings": [
-            {
-                "name": "name",
-                "label": "Display name",
-                "type": "string",
-                "default": "KayoAnime",
-                "required": True,
-            },
-            {
-                "name": "base_url",
-                "label": "Base URL",
-                "type": "url",
-                "default": "https://kayoanime.com",
-                "required": True,
-                "help": "Site root, no trailing path required.",
-            },
-            {
-                "name": "max_posts",
-                "label": "Max posts to open",
-                "type": "number",
-                "default": 5,
-                "required": False,
-            },
-            {
-                "name": "follow_posts",
-                "label": "Follow posts for Drive links",
-                "type": "boolean",
-                "default": True,
-                "required": False,
-            },
-            {
-                "name": "timeout",
-                "label": "HTTP timeout (seconds)",
-                "type": "number",
-                "default": 25,
-                "required": False,
-            },
+            {"name": "name", "label": "Display name", "type": "string", "default": "AnimeKaizen", "required": True},
+            {"name": "base_url", "label": "Base URL", "type": "url", "default": "https://www.animekaizen.org", "required": True},
+            {"name": "search_url_template", "label": "Search URL template", "type": "string", "default": "/?s={query}", "required": True},
+            {"name": "selector_result", "label": "Result item selector", "type": "string", "default": "article", "required": True},
+            {"name": "selector_title", "label": "Title selector", "type": "string", "default": "h2 a, .entry-title a", "required": True},
+            {"name": "selector_url", "label": "Link selector", "type": "string", "default": "h2 a, .entry-title a", "required": True},
+            {"name": "selector_date", "label": "Date selector (optional)", "type": "string", "default": "", "required": False},
+            {"name": "follow_posts", "label": "Open posts and extract download links", "type": "boolean", "default": True, "required": False},
+            {"name": "selector_drive_link", "label": "Download link selector", "type": "string", "default": "a.a4u-download-link, a[href*='/open/?id=']", "required": False},
+            {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": False},
+            {"name": "max_results", "label": "Max search results", "type": "number", "default": 25, "required": False},
+            {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": False},
         ],
     },
     {
@@ -78,100 +54,27 @@ ADAPTER_CATALOG: list[dict[str, Any]] = [
         "adapter": "generic_html",
         "description": (
             "Any public HTML listing site. Configure the search URL template and "
-            "CSS selectors. Optionally follow post pages and pull Google Drive links."
+            "CSS selectors. Turn on Follow posts so search returns download links "
+            "instead of the post page (post pages download as blank HTML files)."
         ),
         "settings": [
-            {
-                "name": "name",
-                "label": "Display name",
-                "type": "string",
-                "default": "My site",
-                "required": True,
-            },
-            {
-                "name": "base_url",
-                "label": "Base URL",
-                "type": "url",
-                "default": "https://example.com",
-                "required": True,
-            },
-            {
-                "name": "search_url_template",
-                "label": "Search URL template",
-                "type": "string",
-                "default": "/?s={query}",
-                "required": True,
-                "help": "Relative or absolute. Use {query} (URL-encoded) or {query_raw}.",
-            },
-            {
-                "name": "selector_result",
-                "label": "Result item selector",
-                "type": "string",
-                "default": "article",
-                "required": True,
-                "help": "CSS selector matching each search result row/card.",
-            },
-            {
-                "name": "selector_title",
-                "label": "Title selector",
-                "type": "string",
-                "default": "h2 a, h2",
-                "required": True,
-                "help": "Relative to each result item.",
-            },
-            {
-                "name": "selector_url",
-                "label": "Link selector",
-                "type": "string",
-                "default": "h2 a, a",
-                "required": True,
-            },
-            {
-                "name": "selector_date",
-                "label": "Date selector (optional)",
-                "type": "string",
-                "default": "",
-                "required": False,
-            },
-            {
-                "name": "follow_posts",
-                "label": "Open posts and extract Drive links",
-                "type": "boolean",
-                "default": False,
-                "required": False,
-            },
-            {
-                "name": "selector_drive_link",
-                "label": "Drive link selector (if follow posts)",
-                "type": "string",
-                "default": 'a[href*="drive.google.com"]',
-                "required": False,
-            },
-            {
-                "name": "max_posts",
-                "label": "Max posts to open",
-                "type": "number",
-                "default": 5,
-                "required": False,
-            },
-            {
-                "name": "max_results",
-                "label": "Max search results",
-                "type": "number",
-                "default": 25,
-                "required": False,
-            },
-            {
-                "name": "timeout",
-                "label": "HTTP timeout (seconds)",
-                "type": "number",
-                "default": 25,
-                "required": False,
-            },
+            {"name": "name", "label": "Display name", "type": "string", "default": "My site", "required": True},
+            {"name": "base_url", "label": "Base URL", "type": "url", "default": "https://example.com", "required": True},
+            {"name": "search_url_template", "label": "Search URL template", "type": "string", "default": "/?s={query}", "required": True,
+             "help": "Use {query} (URL-encoded) or {query_raw}."},
+            {"name": "selector_result", "label": "Result item selector", "type": "string", "default": "article", "required": True},
+            {"name": "selector_title", "label": "Title selector", "type": "string", "default": "h2 a, h2", "required": True},
+            {"name": "selector_url", "label": "Link selector", "type": "string", "default": "h2 a, a", "required": True},
+            {"name": "selector_date", "label": "Date selector (optional)", "type": "string", "default": "", "required": False},
+            {"name": "follow_posts", "label": "Open posts and extract download links", "type": "boolean", "default": True, "required": False},
+            {"name": "selector_drive_link", "label": "Download link selector (optional)", "type": "string",
+             "default": "a.a4u-download-link, a.kayo-download-link, a[href*='drive.google.com'], a[href*='/open/?id=']", "required": False},
+            {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": False},
+            {"name": "max_results", "label": "Max search results", "type": "number", "default": 25, "required": False},
+            {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": False},
         ],
     },
 ]
-
 
 def _sources_path():
     return CONFIG_DIR / "sources.json"
