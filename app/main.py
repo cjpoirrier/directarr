@@ -7,8 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import gdrive, torznab
-from .config import API_KEY, AUTH_PASSWORD, AUTH_USERNAME, SESSION_SECRET
+from . import config, gdrive, torznab
+from .config import AUTH_PASSWORD, AUTH_USERNAME, SESSION_SECRET, set_api_key
 from .db import connect, init_db
 from .downloader import enqueue, prepare_retry, run_download
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
@@ -33,8 +33,11 @@ app.add_middleware(
     max_age=60 * 60 * 24 * 14,  # 14 days
 )
 
-if STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+def _static_file(name: str, media_type: str) -> FileResponse:
+    path = STATIC_DIR / name
+    if not path.is_file():
+        raise HTTPException(404, f"Static file missing: {name} (looked in {STATIC_DIR})")
+    return FileResponse(path, media_type=media_type)
 
 
 @app.on_event("startup")
@@ -43,7 +46,7 @@ def startup():
 
 
 def _api_key_ok(key: str | None) -> bool:
-    return bool(key) and hmac.compare_digest(key, API_KEY)
+    return bool(key) and hmac.compare_digest(key, config.API_KEY)
 
 
 def _session_ok(request: Request) -> bool:
@@ -76,15 +79,32 @@ class LoginBody(BaseModel):
 
 @app.get("/")
 def ui_root():
-    index = STATIC_DIR / "index.html"
-    if not index.is_file():
-        raise HTTPException(404, "UI not found")
-    return FileResponse(index)
+    return _static_file("index.html", "text/html; charset=utf-8")
+
+
+@app.get("/static/styles.css")
+def static_css():
+    return _static_file("styles.css", "text/css; charset=utf-8")
+
+
+@app.get("/static/app.js")
+def static_js():
+    return _static_file("app.js", "application/javascript; charset=utf-8")
+
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "directarr"}
+    files = sorted(p.name for p in STATIC_DIR.iterdir() if p.is_file()) if STATIC_DIR.is_dir() else []
+    return {
+        "status": "ok",
+        "service": "directarr",
+        "static_dir": str(STATIC_DIR),
+        "static_files": files,
+    }
 
 
 @app.get("/api/v1/auth/status")
@@ -115,6 +135,30 @@ def auth_login(body: LoginBody, request: Request):
 def auth_logout(request: Request):
     request.session.clear()
     return {"ok": True}
+
+
+@app.get("/api/v1/settings/security")
+def settings_security(_auth=Depends(require_auth)):
+    """Sonarr-style security settings: current API key for Torznab clients."""
+    return {
+        "api_key": config.API_KEY,
+        "torznab_path": "/api",
+        "auth_enabled": bool(AUTH_PASSWORD),
+        "username": AUTH_USERNAME,
+    }
+
+
+@app.post("/api/v1/settings/api-key/regenerate")
+def settings_regenerate_api_key(_auth=Depends(require_auth)):
+    """Generate a new API key and persist it under config/api_key.txt."""
+    import secrets
+    new_key = secrets.token_hex(20)
+    set_api_key(new_key)
+    return {
+        "api_key": config.API_KEY,
+        "torznab_path": "/api",
+        "message": "API key regenerated. Update Sonarr/Radarr indexers with the new key.",
+    }
 
 
 @app.get("/api")

@@ -142,22 +142,36 @@
 
       <section id="view-settings" class="view">
         <div class="panel">
-          <h2>Torznab (Sonarr / Radarr)</h2>
-          <p class="hint">External *Arr clients still use the API key. The web UI uses username/password when configured.</p>
-          <label>API key (for Torznab URL)
-            <input id="api-key" type="password" placeholder="DIRECTARR_API_KEY" autocomplete="off" />
-          </label>
-          <button id="save-key" class="btn" type="button">Save key in browser</button>
-          <p style="margin-top:1rem">Torznab URL:</p>
-          <code id="torznab-url">http://localhost:8787/api?apikey=YOUR_KEY</code>
-          <p class="hint" style="margin-top:1rem">API docs: <a href="/docs" target="_blank">/docs</a></p>
+          <h2>Security</h2>
+          <div class="settings-grid">
+            <div class="settings-label">API Key</div>
+            <div class="settings-field">
+              <div class="api-key-row">
+                <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
+                <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+              </div>
+              <p class="hint">Used by Sonarr/Radarr Torznab indexers. Regenerating invalidates the old key immediately.</p>
+            </div>
+
+            <div class="settings-label">Torznab URL</div>
+            <div class="settings-field">
+              <div class="api-key-row">
+                <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
+                <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
+                <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+              </div>
+              <p class="hint">Paste this into Sonarr as a Torznab indexer. API docs: <a href="/docs" target="_blank">/docs</a></p>
+            </div>
+          </div>
         </div>
         <div class="panel">
           <h2>UI login</h2>
           <p class="hint">
-            Set <code>DIRECTARR_USERNAME</code> and <code>DIRECTARR_PASSWORD</code> in the environment.
-            Leave password empty to disable forms login (session always allowed).
+            Set <code>DIRECTARR_USERNAME</code> and <code>DIRECTARR_PASSWORD</code> in the environment
+            (or docker-compose). Leave password empty to disable forms login.
           </p>
+          <div id="settings-auth-info" class="hint" style="margin-top:0.5rem"></div>
         </div>
       </section>
     </main>

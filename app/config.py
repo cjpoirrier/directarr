@@ -16,7 +16,36 @@ CONFIG_DIR = Path(os.getenv("DIRECTARR_CONFIG_DIR", str(_ROOT / "config")))
 DOWNLOAD_DIR = Path(os.getenv("DIRECTARR_DOWNLOAD_DIR", str(_ROOT / "downloads")))
 STAGING_DIR = Path(os.getenv("DIRECTARR_STAGING_DIR", str(_ROOT / "staging")))
 DB_PATH = CONFIG_DIR / "directarr.sqlite3"
-API_KEY = os.getenv("DIRECTARR_API_KEY", "change-this-long-random-key")
+API_KEY_FILE = CONFIG_DIR / "api_key.txt"
+
+
+def _load_api_key() -> str:
+    """Prefer a regenerated key stored under config/, else env, else default."""
+    try:
+        if API_KEY_FILE.is_file():
+            stored = API_KEY_FILE.read_text(encoding="utf-8").strip()
+            if stored:
+                return stored
+    except OSError:
+        pass
+    return os.getenv("DIRECTARR_API_KEY", "change-this-long-random-key")
+
+
+API_KEY = _load_api_key()
+
+
+def set_api_key(new_key: str) -> str:
+    """Persist a new API key (Sonarr-style regenerate) and update the in-memory value."""
+    global API_KEY
+    new_key = (new_key or "").strip()
+    if len(new_key) < 16:
+        raise ValueError("API key must be at least 16 characters")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    API_KEY_FILE.write_text(new_key + "\n", encoding="utf-8")
+    API_KEY = new_key
+    return API_KEY
+
+
 # Web UI forms login (Sonarr/Radarr-style). Leave password empty to disable UI auth.
 AUTH_USERNAME = os.getenv("DIRECTARR_USERNAME", "admin")
 AUTH_PASSWORD = os.getenv("DIRECTARR_PASSWORD", "")

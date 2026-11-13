@@ -346,10 +346,35 @@
     }
   }
 
-  function updateSettings() {
-    const key = apiKey() || "YOUR_KEY";
-    const host = location.origin;
-    $("#torznab-url").textContent = `${host}/api?apikey=${key}`;
+  async function updateSettings() {
+    try {
+      const data = await api("/api/v1/settings/security");
+      const key = data.api_key || "";
+      const host = location.origin;
+      if ($("#api-key")) $("#api-key").value = key;
+      if ($("#torznab-url")) {
+        $("#torznab-url").textContent = `${host}${data.torznab_path || "/api"}?apikey=${key || "YOUR_KEY"}`;
+      }
+      const info = $("#settings-auth-info");
+      if (info) {
+        info.textContent = data.auth_enabled
+          ? `Forms login enabled (user: ${data.username || "admin"}).`
+          : "Forms login disabled (DIRECTARR_PASSWORD not set).";
+      }
+      // Keep a browser copy so optional X-Api-Key header still works if session expires.
+      if (key) localStorage.setItem(KEY, key);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  async function copyText(value, label) {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast(`${label} copied`);
+    } catch {
+      toast("Could not copy — select and copy manually", true);
+    }
   }
 
   function renderResolveResults(url, files) {
@@ -472,14 +497,54 @@
     $("#conn-status").className = "pill muted";
   });
 
-  // API key (Settings / Torznab only)
+  // Settings: API key (Sonarr-style, Settings page only)
   const saved = localStorage.getItem(KEY);
   if (saved && $("#api-key")) $("#api-key").value = saved;
-  $("#save-key").addEventListener("click", () => {
-    localStorage.setItem(KEY, $("#api-key").value.trim());
-    toast("API key saved in this browser");
-    updateSettings();
-  });
+
+  const copyApiBtn = $("#copy-api-key");
+  if (copyApiBtn) {
+    copyApiBtn.addEventListener("click", () => {
+      const key = ($("#api-key") && $("#api-key").value.trim()) || "";
+      if (!key) return toast("No API key loaded", true);
+      copyText(key, "API key");
+    });
+  }
+
+  const copyTorzBtn = $("#copy-torznab");
+  if (copyTorzBtn) {
+    copyTorzBtn.addEventListener("click", () => {
+      const url = ($("#torznab-url") && $("#torznab-url").textContent.trim()) || "";
+      if (!url) return toast("No Torznab URL", true);
+      copyText(url, "Torznab URL");
+    });
+  }
+
+  const refreshSettingsBtn = $("#refresh-settings");
+  if (refreshSettingsBtn) {
+    refreshSettingsBtn.addEventListener("click", () => {
+      updateSettings();
+      toast("Settings refreshed");
+    });
+  }
+
+  const regenBtn = $("#regen-api-key");
+  if (regenBtn) {
+    regenBtn.addEventListener("click", async () => {
+      if (!confirm("Regenerate API key? Sonarr/Radarr indexers must be updated with the new key.")) return;
+      try {
+        const data = await api("/api/v1/settings/api-key/regenerate", { method: "POST" });
+        if ($("#api-key")) $("#api-key").value = data.api_key || "";
+        if (data.api_key) localStorage.setItem(KEY, data.api_key);
+        const host = location.origin;
+        if ($("#torznab-url")) {
+          $("#torznab-url").textContent = `${host}${data.torznab_path || "/api"}?apikey=${data.api_key || "YOUR_KEY"}`;
+        }
+        toast("API key regenerated");
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  }
 
   $("#search-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
