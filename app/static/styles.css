@@ -198,3 +198,18 @@ td.actions { white-space: nowrap; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-label { text-align: left; padding-top: 0; }
 }
+
+.bar {
+  display: inline-block;
+  height: 6px;
+  width: 80px;
+  background: #0b1018;
+  border-radius: 4px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent, #3b82f6);
+}

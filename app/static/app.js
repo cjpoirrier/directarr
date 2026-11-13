@@ -1,5 +1,8 @@
 (() => {
   const KEY = "directarr_api_key";
+  let downloadPollTimer = null;
+  let lastDownloads = [];
+  let currentView = "dashboard";
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
@@ -52,6 +55,7 @@
   }
 
   function setView(name) {
+    currentView = name;
     $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
     $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
     const titles = {
@@ -64,15 +68,63 @@
       settings: "Settings",
     };
     $("#view-title").textContent = titles[name] || name;
-    if (name === "dashboard") loadDashboard();
+    if (name === "dashboard") loadDashboard({ silent: false });
     if (name === "releases") loadReleases();
-    if (name === "downloads") loadDownloads();
+    if (name === "downloads") loadDownloads({ silent: false });
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
+    manageDownloadPolling();
   }
 
-  async function loadDashboard() {
+  function downloadsAreActive(rows) {
+    return (rows || []).some((r) => {
+      const s = (r.status || "").toLowerCase();
+      return s === "queued" || s === "downloading";
+    });
+  }
+
+  function updateAutoRefreshLabel(active) {
+    const label = $("#auto-refresh-label");
+    if (!label) return;
+    if (currentView !== "downloads") return;
+    label.textContent = active ? "Auto-refresh on (live)" : "Auto-refresh on (idle)";
+  }
+
+  function manageDownloadPolling() {
+    if (downloadPollTimer) {
+      clearTimeout(downloadPollTimer);
+      downloadPollTimer = null;
+    }
+    if (currentView !== "downloads" && currentView !== "dashboard") return;
+
+    const tick = async () => {
+      try {
+        if (currentView === "downloads") await loadDownloads({ silent: true });
+        else if (currentView === "dashboard") await loadDashboard({ silent: true });
+      } finally {
+        scheduleNext();
+      }
+    };
+
+    const scheduleNext = () => {
+      if (downloadPollTimer) {
+        clearTimeout(downloadPollTimer);
+        downloadPollTimer = null;
+      }
+      if (currentView !== "downloads" && currentView !== "dashboard") return;
+      const active = downloadsAreActive(lastDownloads);
+      updateAutoRefreshLabel(active);
+      let delay = 5000;
+      if (currentView === "downloads") delay = active ? 1500 : 4000;
+      else delay = active ? 2500 : 8000;
+      downloadPollTimer = setTimeout(tick, delay);
+    };
+
+    tick();
+  }
+
+  async function loadDashboard({ silent } = {}) {
     try {
       const [sources, releases, downloads, gdrive] = await Promise.all([
         api("/api/v1/sources"),
@@ -86,10 +138,13 @@
       $("#stat-gdrive").textContent = gdrive.authorized ? "Authorized" : "Not authorized";
       $("#conn-status").textContent = "Connected";
       $("#conn-status").className = "pill ok";
-      renderDownloadsTable($("#dash-downloads"), downloads.slice(0, 8));
+      lastDownloads = downloads || [];
+      renderDownloadsTable($("#dash-downloads"), lastDownloads.slice(0, 8));
     } catch (e) {
-      $("#conn-status").textContent = e.message;
-      $("#conn-status").className = "pill err";
+      if (!silent) {
+        $("#conn-status").textContent = e.message;
+        $("#conn-status").className = "pill err";
+      }
     }
   }
 
@@ -253,6 +308,15 @@
     });
   }
 
+  function progressCell(r) {
+    const pct = Math.max(0, Math.min(100, Number(r.progress) || 0));
+    const active = (r.status || "").toLowerCase() === "downloading";
+    if (active || (pct > 0 && pct < 100)) {
+      return `<span class="bar" title="${pct}%"><span style="width:${pct}%"></span></span> ${pct}%`;
+    }
+    return `${pct}%`;
+  }
+
   function renderDownloadsTable(el, rows) {
     if (!rows.length) {
       el.innerHTML = `<p class="muted">No download jobs yet.</p>`;
@@ -261,12 +325,16 @@
     el.innerHTML = `<table>
       <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th>Error / path</th></tr></thead>
       <tbody>
-        ${rows.map((r) => `<tr>
+        ${rows
+          .map(
+            (r) => `<tr>
           <td class="title">${esc(r.title)}</td>
           <td>${statusPill(r.status)}</td>
-          <td>${r.progress ?? 0}%</td>
+          <td>${progressCell(r)}</td>
           <td class="title muted">${esc(r.error || r.path || "")}</td>
-        </tr>`).join("")}
+        </tr>`
+          )
+          .join("")}
       </tbody></table>`;
   }
 
@@ -279,12 +347,14 @@
     }
   }
 
-  async function loadDownloads() {
+  async function loadDownloads({ silent } = {}) {
     try {
       const rows = await api("/api/v1/downloads");
-      renderDownloadsTable($("#downloads-table"), rows);
+      lastDownloads = rows || [];
+      renderDownloadsTable($("#downloads-table"), lastDownloads);
+      updateAutoRefreshLabel(downloadsAreActive(lastDownloads));
     } catch (e) {
-      toast(e.message, true);
+      if (!silent) toast(e.message, true);
     }
   }
 
@@ -557,7 +627,7 @@
   });
 
   $("#refresh-releases").addEventListener("click", loadReleases);
-  $("#refresh-downloads").addEventListener("click", loadDownloads);
+  $("#refresh-downloads").addEventListener("click", () => loadDownloads({ silent: false }));
   $("#reload-sources").addEventListener("click", async () => {
     try {
       const r = await api("/api/v1/sources/reload", { method: "POST" });
@@ -643,6 +713,7 @@
 
   // Boot
   updateSettings();
+  manageDownloadPolling();
   if (apiKey()) loadDashboard();
 
   const qClose = $("#queue-modal-close");

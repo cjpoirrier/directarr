@@ -73,7 +73,10 @@
         <div class="panel">
           <div class="row between">
             <h2>Download queue</h2>
-            <button class="btn" id="refresh-downloads">Refresh</button>
+            <div class="row">
+              <span id="auto-refresh-label" class="hint">Auto-refresh on</span>
+              <button class="btn" id="refresh-downloads" type="button">Refresh</button>
+            </div>
           </div>
           <div id="downloads-table" class="table-wrap"></div>
         </div>
