@@ -47,6 +47,10 @@ def set_api_key(new_key: str) -> str:
 
 
 MAX_DOWNLOAD_BYTES = int(os.getenv("DIRECTARR_MAX_DOWNLOAD_MB", "20000")) * 1024 * 1024
+# Parallel HTTP connections for direct (non-Drive) downloads. 1 = single stream.
+DOWNLOAD_CONNECTIONS = max(1, min(32, int(os.getenv("DIRECTARR_DOWNLOAD_CONNECTIONS", "8"))))
+# Only split into multi-connection parts when the file is at least this large (MiB).
+DOWNLOAD_MULTI_MIN_MB = max(1, int(os.getenv("DIRECTARR_DOWNLOAD_MULTI_MIN_MB", "8")))
 ALLOWED_HOSTS = {
     v.strip().lower()
     for v in os.getenv("DIRECTARR_ALLOWED_HOSTS", "").split(",")

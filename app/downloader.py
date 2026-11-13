@@ -1,3 +1,11 @@
+"""Download queue workers.
+
+HTTPS direct links use multi-connection ranged downloads (aria2-style) when the
+server supports Accept-Ranges. Google Drive stays on the official Drive API.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import errno
 import ipaddress
@@ -11,17 +19,21 @@ from urllib.parse import urlparse
 import httpx
 
 from . import gdrive
-from .config import ALLOWED_HOSTS, DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, STAGING_DIR
+from .config import (
+    ALLOWED_HOSTS,
+    DOWNLOAD_CONNECTIONS,
+    DOWNLOAD_DIR,
+    DOWNLOAD_MULTI_MIN_MB,
+    MAX_DOWNLOAD_BYTES,
+    STAGING_DIR,
+)
 from .db import connect
+
+USER_AGENT = "Directarr/0.2"
 
 
 def safe_move(src: Path, dest: Path) -> Path:
-    """Move src to dest, handling cross-device (Errno 18) by copy+verify+unlink.
-
-    Staging and downloads often live on different Docker volume mounts, so
-    os.rename / shutil.move can fail with EXDEV. Only remove the staging file
-    after the destination has been written and size-verified.
-    """
+    """Move src to dest; on cross-device (EXDEV) copy + verify + unlink."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
@@ -31,16 +43,11 @@ def safe_move(src: Path, dest: Path) -> Path:
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-    # Cross-device: copy, verify, then remove source.
     shutil.copy2(src, dest)
     try:
-        src_size = src.stat().st_size
-        dest_size = dest.stat().st_size
-        if src_size != dest_size:
+        if src.stat().st_size != dest.stat().st_size:
             dest.unlink(missing_ok=True)
-            raise OSError(
-                f"Cross-device copy size mismatch: source={src_size} dest={dest_size}"
-            )
+            raise OSError("Cross-device copy size mismatch")
     except Exception:
         dest.unlink(missing_ok=True)
         raise
@@ -74,16 +81,12 @@ def _safe_filename(title: str, job_id: str) -> str:
     return safe or job_id
 
 
-def _staging_path(job_id: str) -> Path:
-    return STAGING_DIR / f"{job_id}.part"
-
-
-def _part_is_nearly_complete(temp: Path, min_bytes: int = 1024 * 1024) -> bool:
-    """True when a staging file looks finished (typical after a move-only failure)."""
-    try:
-        return temp.is_file() and temp.stat().st_size >= min_bytes
-    except OSError:
-        return False
+def _set_progress(job_id: str, progress: int) -> None:
+    with connect() as db:
+        db.execute(
+            "UPDATE downloads SET progress=? WHERE id=?",
+            (min(99, max(0, int(progress))), job_id),
+        )
 
 
 def enqueue(title: str, url: str, drive_file_id: str | None = None) -> str:
@@ -109,44 +112,34 @@ async def run_download(
     title: str,
     url: str,
     drive_file_id: str | None = None,
-    *,
-    finalize_only: bool = False,
 ):
-    temp = _staging_path(job_id)
+    temp = STAGING_DIR / f"{job_id}.part"
     target = DOWNLOAD_DIR / _safe_filename(title, job_id)
+    segment_paths: list[Path] = []
     try:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         STAGING_DIR.mkdir(parents=True, exist_ok=True)
         with connect() as db:
             db.execute(
-                "UPDATE downloads SET status='downloading',progress=0,error=NULL,path=NULL WHERE id=?",
+                "UPDATE downloads SET status='downloading',progress=0,error=NULL WHERE id=?",
                 (job_id,),
             )
 
-        if finalize_only and _part_is_nearly_complete(temp):
-            # Previous attempt already wrote the payload; only complete the move.
-            with connect() as db:
-                db.execute(
-                    "UPDATE downloads SET progress=99 WHERE id=?",
-                    (job_id,),
-                )
-            target = safe_move(temp, target)
-        elif drive_file_id or gdrive.is_drive_url(url):
+        if drive_file_id or gdrive.is_drive_url(url):
             target = await _download_drive(job_id, title, url, temp, drive_file_id)
         else:
-            await _download_http(job_id, url, temp)
-            target = safe_move(temp, target)
+            segment_paths = await _download_http(job_id, url, temp)
+            safe_move(temp, target)
 
         with connect() as db:
             db.execute(
-                "UPDATE downloads SET status='completed',progress=100,path=?,error=NULL WHERE id=?",
+                "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=?",
                 (str(target), job_id),
             )
     except Exception as exc:
-        # Keep a near-complete .part so retry can finalize without re-downloading.
-        # Drop small/partial staging files to avoid filling the volume.
-        if temp.exists() and not _part_is_nearly_complete(temp):
-            temp.unlink(missing_ok=True)
+        temp.unlink(missing_ok=True)
+        for p in segment_paths:
+            p.unlink(missing_ok=True)
         with connect() as db:
             db.execute(
                 "UPDATE downloads SET status='failed',error=? WHERE id=?",
@@ -154,65 +147,209 @@ async def run_download(
             )
 
 
-def prepare_retry(job_id: str) -> dict:
-    """Reset a failed job for retry. Returns fields needed to re-run.
+async def _probe_http(client: httpx.AsyncClient, url: str) -> tuple[str, int | None, bool]:
+    """Return (final_url, content_length or None, accept_ranges)."""
+    headers = {"User-Agent": USER_AGENT}
+    # Prefer HEAD; some hosts block it — fall back to a 1-byte range GET.
+    try:
+        head = await client.head(url, headers=headers, follow_redirects=True)
+        if head.status_code < 400:
+            final = str(head.url)
+            validate_public_url(final)
+            cl = head.headers.get("content-length")
+            size = int(cl) if cl and cl.isdigit() else None
+            ar = "bytes" in (head.headers.get("accept-ranges") or "").lower()
+            if size is not None or ar:
+                return final, size, ar
+    except Exception:
+        pass
 
-    If a substantial staging .part still exists (typical after a cross-device
-    move failure), the next run finalizes only instead of re-downloading.
-    """
-    with connect() as db:
-        row = db.execute("SELECT * FROM downloads WHERE id=?", (job_id,)).fetchone()
-        if row is None:
-            raise KeyError("Job not found")
-        job = dict(row)
-        if job.get("status") != "failed":
-            raise ValueError(
-                f"Only failed jobs can be retried (status={job.get('status')})"
-            )
+    # Range probe
+    probe = await client.get(
+        url,
+        headers={**headers, "Range": "bytes=0-0"},
+        follow_redirects=True,
+    )
+    final = str(probe.url)
+    validate_public_url(final)
+    if probe.status_code in (200, 206):
+        cr = probe.headers.get("content-range") or ""
+        # Content-Range: bytes 0-0/12345
+        size = None
+        if "/" in cr:
+            total = cr.rsplit("/", 1)[-1].strip()
+            if total.isdigit():
+                size = int(total)
+        if size is None:
+            cl = probe.headers.get("content-length")
+            if probe.status_code == 200 and cl and cl.isdigit():
+                size = int(cl)
+        ar = probe.status_code == 206 or "bytes" in (probe.headers.get("accept-ranges") or "").lower()
+        return final, size, ar
+    probe.raise_for_status()
+    return final, None, False
 
-        temp = _staging_path(job_id)
-        finalize_only = _part_is_nearly_complete(temp)
-        db.execute(
-            """UPDATE downloads
-               SET status='queued', progress=0, error=NULL, path=NULL
-               WHERE id=?""",
-            (job_id,),
-        )
-    job["finalize_only"] = finalize_only
-    return job
 
-
-async def _download_http(job_id: str, url: str, temp: Path) -> None:
+async def _download_http(job_id: str, url: str, temp: Path) -> list[Path]:
+    """Download via single or multi-connection HTTP. Returns segment paths to clean up."""
     validate_public_url(url)
-    total = 0
-    content_length = None
-    async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
-        async with client.stream(
-            "GET", url, headers={"User-Agent": "Directarr/0.1"}
-        ) as response:
-            if response.is_redirect:
-                raise ValueError(
-                    "Redirects are disabled. Resolve and approve the final HTTPS URL first."
-                )
+    limits = httpx.Limits(max_connections=DOWNLOAD_CONNECTIONS + 2, max_keepalive_connections=DOWNLOAD_CONNECTIONS)
+    async with httpx.AsyncClient(timeout=None, follow_redirects=True, limits=limits) as client:
+        final_url, size, accept_ranges = await _probe_http(client, url)
+        if size is not None and size > MAX_DOWNLOAD_BYTES:
+            raise ValueError("Configured maximum download size exceeded.")
+
+        min_multi = DOWNLOAD_MULTI_MIN_MB * 1024 * 1024
+        use_multi = (
+            DOWNLOAD_CONNECTIONS > 1
+            and accept_ranges
+            and size is not None
+            and size >= min_multi
+        )
+
+        if use_multi:
+            try:
+                return await _download_http_multi(client, job_id, final_url, temp, size)
+            except Exception:
+                for i in range(DOWNLOAD_CONNECTIONS + 4):
+                    (STAGING_DIR / f"{job_id}.part.{i}").unlink(missing_ok=True)
+                temp.unlink(missing_ok=True)
+        await _download_http_single(client, job_id, final_url, temp, size)
+        return []
+
+
+async def _download_http_single(
+    client: httpx.AsyncClient,
+    job_id: str,
+    url: str,
+    temp: Path,
+    known_size: int | None,
+) -> None:
+    """Single-stream download with resume if a partial .part already exists."""
+    headers = {"User-Agent": USER_AGENT}
+    existing = 0
+    if temp.is_file():
+        existing = temp.stat().st_size
+        if known_size and existing >= known_size:
+            _set_progress(job_id, 99)
+            return
+        if existing > 0:
+            headers["Range"] = f"bytes={existing}-"
+
+    mode = "ab" if existing else "wb"
+    async with client.stream("GET", url, headers=headers) as response:
+        if existing and response.status_code == 200:
+            # Server ignored Range — restart
+            existing = 0
+            mode = "wb"
+        elif existing and response.status_code not in (200, 206):
             response.raise_for_status()
+        elif not existing:
+            response.raise_for_status()
+
+        if known_size is None:
             cl = response.headers.get("content-length")
             if cl and cl.isdigit():
-                content_length = int(cl)
-            with temp.open("wb") as output:
-                async for chunk in response.aiter_bytes(1024 * 1024):
-                    total += len(chunk)
-                    if total > MAX_DOWNLOAD_BYTES:
-                        raise ValueError("Configured maximum download size exceeded.")
+                # If resumed, content-length is remaining bytes
+                known_size = int(cl) + existing
+
+        total = existing
+        with temp.open(mode) as output:
+            async for chunk in response.aiter_bytes(1024 * 256):
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("Configured maximum download size exceeded.")
+                output.write(chunk)
+                if known_size and known_size > 0:
+                    _set_progress(job_id, total * 100 // known_size)
+                else:
+                    _set_progress(job_id, min(99, total * 100 // MAX_DOWNLOAD_BYTES))
+
+
+async def _download_http_multi(
+    client: httpx.AsyncClient,
+    job_id: str,
+    url: str,
+    temp: Path,
+    size: int,
+) -> list[Path]:
+    """Split the file into parallel Range requests, then assemble."""
+    n = DOWNLOAD_CONNECTIONS
+    max_parts = max(1, size // (1024 * 1024))
+    n = max(1, min(n, max_parts))
+
+    part_size = size // n
+    ranges: list[tuple[int, int]] = []
+    for i in range(n):
+        start_b = i * part_size
+        end_b = size - 1 if i == n - 1 else (start_b + part_size - 1)
+        ranges.append((start_b, end_b))
+
+    segment_paths = [STAGING_DIR / f"{job_id}.part.{i}" for i in range(n)]
+    done_bytes = [0] * n
+    lock = asyncio.Lock()
+
+    async def report() -> None:
+        total = sum(done_bytes)
+        if size > 0:
+            _set_progress(job_id, total * 100 // size)
+
+    async def fetch_part(idx: int, start_b: int, end_b: int, seg: Path) -> None:
+        expected = end_b - start_b + 1
+        if seg.is_file() and seg.stat().st_size >= expected:
+            done_bytes[idx] = expected
+            async with lock:
+                await report()
+            return
+
+        have = seg.stat().st_size if seg.is_file() else 0
+        if have > expected:
+            seg.unlink(missing_ok=True)
+            have = 0
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Range": f"bytes={start_b + have}-{end_b}",
+        }
+        async with client.stream("GET", url, headers=headers) as response:
+            if response.status_code == 200:
+                raise ValueError("Server ignored Range; multi-connection not supported")
+            if response.status_code != 206:
+                response.raise_for_status()
+            mode = "ab" if have else "wb"
+            written = have
+            with seg.open(mode) as output:
+                async for chunk in response.aiter_bytes(1024 * 256):
                     output.write(chunk)
-                    if content_length and content_length > 0:
-                        progress = min(99, total * 100 // content_length)
-                    else:
-                        progress = min(99, total * 100 // MAX_DOWNLOAD_BYTES)
-                    with connect() as db:
-                        db.execute(
-                            "UPDATE downloads SET progress=? WHERE id=?",
-                            (progress, job_id),
-                        )
+                    written += len(chunk)
+                    done_bytes[idx] = min(written, expected)
+                    async with lock:
+                        await report()
+        got = seg.stat().st_size
+        if got < expected:
+            raise ValueError(f"Segment {idx} incomplete: got {got}, expected {expected}")
+        done_bytes[idx] = expected
+        async with lock:
+            await report()
+
+    await asyncio.gather(
+        *[
+            fetch_part(i, s, e, p)
+            for i, ((s, e), p) in enumerate(zip(ranges, segment_paths))
+        ]
+    )
+
+    with temp.open("wb") as out:
+        for seg in segment_paths:
+            with seg.open("rb") as inp:
+                shutil.copyfileobj(inp, out, length=1024 * 1024)
+            seg.unlink(missing_ok=True)
+
+    if temp.stat().st_size < int(size * 0.99):
+        raise ValueError(
+            f"Assembled file incomplete: got {temp.stat().st_size}, expected {size}"
+        )
+    _set_progress(job_id, 99)
+    return []
 
 
 async def _download_drive(
@@ -232,19 +369,14 @@ async def _download_drive(
         if meta.is_folder:
             raise ValueError(
                 "URL points to a Google Drive folder. "
-                "POST /api/v1/gdrive/resolve, pick a file, then POST /api/v1/downloads "
-                "with drive_file_id set."
+                "Use Queue/Resolve to expand the folder and pick files."
             )
         file_id = meta.id
         if meta.name:
             dest_name = _safe_filename(meta.name, job_id)
 
     def progress_cb(pct: int):
-        with connect() as db:
-            db.execute(
-                "UPDATE downloads SET progress=? WHERE id=?",
-                (min(99, max(0, int(pct))), job_id),
-            )
+        _set_progress(job_id, pct)
 
     await asyncio.to_thread(gdrive.download_file_to_path, file_id, temp, progress_cb)
     target = DOWNLOAD_DIR / dest_name

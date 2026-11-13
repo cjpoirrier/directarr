@@ -10,14 +10,14 @@ services:
       DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:-change-this-long-random-key}
       DIRECTARR_USERNAME: ${DIRECTARR_USERNAME:-admin}
       DIRECTARR_PASSWORD: ${DIRECTARR_PASSWORD:-}
-      DIRECTARR_SESSION_SECRET: ${DIRECTARR_SESSION_SECRET:-}
       DIRECTARR_CONFIG_DIR: /config
       DIRECTARR_DOWNLOAD_DIR: /downloads
       DIRECTARR_STAGING_DIR: /staging
       DIRECTARR_MAX_DOWNLOAD_MB: ${DIRECTARR_MAX_DOWNLOAD_MB:-20000}
+      # Parallel connections for HTTPS direct downloads (Drive uses API, not this)
+      DIRECTARR_DOWNLOAD_CONNECTIONS: ${DIRECTARR_DOWNLOAD_CONNECTIONS:-8}
+      DIRECTARR_DOWNLOAD_MULTI_MIN_MB: ${DIRECTARR_DOWNLOAD_MULTI_MIN_MB:-8}
       DIRECTARR_ALLOWED_HOSTS: ${DIRECTARR_ALLOWED_HOSTS:-}
-      # e.g. http://10.0.0.93:8787 — enables one-click Google OAuth (no code paste)
-      DIRECTARR_PUBLIC_URL: ${DIRECTARR_PUBLIC_URL:-}
     volumes:
       - ./config:/config
       - ./downloads:/downloads

@@ -25,7 +25,6 @@ def init_db():
           created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        # Migrate older DBs that predate drive_file_id.
         cols = {row[1] for row in db.execute("PRAGMA table_info(downloads)").fetchall()}
         if "drive_file_id" not in cols:
             db.execute("ALTER TABLE downloads ADD COLUMN drive_file_id TEXT")
