@@ -3,8 +3,13 @@
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  let currentView = "dashboard";
+  let downloadPollTimer = null;
+  let resolveShareUrl = "";
+  let resolveFiles = [];
+
   function apiKey() {
-    return localStorage.getItem(KEY) || $("#api-key").value.trim();
+    return localStorage.getItem(KEY) || ($("#api-key") && $("#api-key").value.trim()) || "";
   }
 
   function toast(msg, isErr) {
@@ -17,15 +22,25 @@
   }
 
   async function api(path, opts = {}) {
-    const headers = Object.assign({ "X-Api-Key": apiKey() }, opts.headers || {});
+    const headers = Object.assign({}, opts.headers || {});
+    const key = apiKey();
+    if (key) headers["X-Api-Key"] = key;
     if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(opts.body);
     }
-    const res = await fetch(path, { ...opts, headers });
+    const res = await fetch(path, { ...opts, headers, credentials: "same-origin" });
     let data = null;
     const text = await res.text();
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    if (res.status === 401) {
+      showLogin(true);
+      throw new Error((data && data.detail) || "Authentication required");
+    }
     if (!res.ok) {
       const detail = (data && data.detail) || res.statusText || "Request failed";
       throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
@@ -50,7 +65,38 @@
       .replace(/"/g, "&quot;");
   }
 
+  function showLogin(show) {
+    const overlay = $("#login-overlay");
+    if (!overlay) return;
+    overlay.classList.toggle("hidden", !show);
+  }
+
+  async function checkAuth() {
+    try {
+      const st = await fetch("/api/v1/auth/status", { credentials: "same-origin" }).then((r) =>
+        r.json()
+      );
+      if (!st.auth_enabled || st.authenticated) {
+        showLogin(false);
+        $("#logout-btn").classList.toggle("hidden", !st.auth_enabled);
+        $("#conn-status").textContent = st.auth_enabled
+          ? `Signed in as ${st.username || "user"}`
+          : "Auth disabled";
+        $("#conn-status").className = "pill ok";
+        return true;
+      }
+      showLogin(true);
+      $("#conn-status").textContent = "Login required";
+      $("#conn-status").className = "pill warn";
+      return false;
+    } catch {
+      showLogin(true);
+      return false;
+    }
+  }
+
   function setView(name) {
+    currentView = name;
     $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
     $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
     const titles = {
@@ -69,9 +115,22 @@
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
+    manageDownloadPolling();
   }
 
-  async function loadDashboard() {
+  function manageDownloadPolling() {
+    clearInterval(downloadPollTimer);
+    downloadPollTimer = null;
+    // Poll while on downloads view, or on dashboard when there may be active jobs.
+    if (currentView === "downloads" || currentView === "dashboard") {
+      downloadPollTimer = setInterval(() => {
+        if (currentView === "downloads") loadDownloads({ silent: true });
+        else if (currentView === "dashboard") loadDashboard({ silent: true });
+      }, 2500);
+    }
+  }
+
+  async function loadDashboard({ silent } = {}) {
     try {
       const [sources, releases, downloads, gdrive] = await Promise.all([
         api("/api/v1/sources"),
@@ -83,12 +142,12 @@
       $("#stat-releases").textContent = String(releases.length);
       $("#stat-downloads").textContent = String(downloads.length);
       $("#stat-gdrive").textContent = gdrive.authorized ? "Authorized" : "Not authorized";
-      $("#conn-status").textContent = "Connected";
-      $("#conn-status").className = "pill ok";
       renderDownloadsTable($("#dash-downloads"), downloads.slice(0, 8));
     } catch (e) {
-      $("#conn-status").textContent = e.message;
-      $("#conn-status").className = "pill err";
+      if (!silent) {
+        $("#conn-status").textContent = e.message;
+        $("#conn-status").className = "pill err";
+      }
     }
   }
 
@@ -100,16 +159,26 @@
     el.innerHTML = `<table>
       <thead><tr><th>Title</th><th>Source</th><th>Res</th><th>Codec</th><th></th></tr></thead>
       <tbody>
-        ${rows.map((r) => `<tr>
+        ${rows
+          .map(
+            (r) => `<tr>
           <td class="title">${esc(r.title)}</td>
           <td>${esc(r.source || "")}</td>
           <td>${esc(r.resolution || "—")}</td>
           <td>${esc(r.codec || "—")}</td>
           <td class="actions">
-            ${queue ? `<button class="btn sm primary" data-queue-title="${esc(r.title)}" data-queue-url="${esc(r.url)}">Queue</button>` : ""}
+            ${
+              queue
+                ? `<button class="btn sm primary" data-queue-title="${esc(r.title)}" data-queue-url="${esc(
+                    r.url
+                  )}">Queue</button>`
+                : ""
+            }
             <a class="btn sm" href="${esc(r.url)}" target="_blank" rel="noopener">Open</a>
           </td>
-        </tr>`).join("")}
+        </tr>`
+          )
+          .join("")}
       </tbody></table>`;
     el.querySelectorAll("[data-queue-url]").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -126,21 +195,61 @@
     });
   }
 
+  function progressCell(r) {
+    const pct = Math.max(0, Math.min(100, Number(r.progress) || 0));
+    const active = (r.status || "").toLowerCase() === "downloading";
+    if (active || (pct > 0 && pct < 100)) {
+      return `<span class="bar" title="${pct}%"><span style="width:${pct}%"></span></span> ${pct}%`;
+    }
+    return `${pct}%`;
+  }
+
   function renderDownloadsTable(el, rows) {
     if (!rows.length) {
       el.innerHTML = `<p class="muted">No download jobs yet.</p>`;
       return;
     }
     el.innerHTML = `<table>
-      <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th>Error / path</th></tr></thead>
+      <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th>Error / path</th><th></th></tr></thead>
       <tbody>
-        ${rows.map((r) => `<tr>
+        ${rows
+          .map(
+            (r) => `<tr>
           <td class="title">${esc(r.title)}</td>
           <td>${statusPill(r.status)}</td>
-          <td>${r.progress ?? 0}%</td>
+          <td>${progressCell(r)}</td>
           <td class="title muted">${esc(r.error || r.path || "")}</td>
-        </tr>`).join("")}
+          <td class="actions">
+            ${
+              (r.status || "").toLowerCase() === "failed"
+                ? `<button class="btn sm primary" data-retry-id="${esc(r.id)}">Retry</button>`
+                : ""
+            }
+          </td>
+        </tr>`
+          )
+          .join("")}
       </tbody></table>`;
+    el.querySelectorAll("[data-retry-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          const res = await api(
+            `/api/v1/downloads/${encodeURIComponent(btn.dataset.retryId)}/retry`,
+            { method: "POST" }
+          );
+          toast(
+            res.finalize_only
+              ? "Retrying (finalizing existing file)"
+              : "Retry queued"
+          );
+          loadDownloads({ silent: true });
+        } catch (e) {
+          toast(e.message, true);
+          btn.disabled = false;
+        }
+      });
+    });
   }
 
   async function loadReleases() {
@@ -152,12 +261,12 @@
     }
   }
 
-  async function loadDownloads() {
+  async function loadDownloads({ silent } = {}) {
     try {
       const rows = await api("/api/v1/downloads");
       renderDownloadsTable($("#downloads-table"), rows);
     } catch (e) {
-      toast(e.message, true);
+      if (!silent) toast(e.message, true);
     }
   }
 
@@ -171,16 +280,26 @@
       $("#sources-table").innerHTML = `<table>
         <thead><tr><th>Name</th><th>Adapter</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          ${rows.map((s) => `<tr>
+          ${rows
+            .map(
+              (s) => `<tr>
             <td>${esc(s.name)}</td>
             <td><code>${esc(s.adapter)}</code></td>
-            <td>${s.enabled ? '<span class="pill ok">enabled</span>' : '<span class="pill muted">disabled</span>'}</td>
+            <td>${
+              s.enabled
+                ? '<span class="pill ok">enabled</span>'
+                : '<span class="pill muted">disabled</span>'
+            }</td>
             <td class="actions">
-              <button class="btn sm" data-toggle-id="${esc(s.id)}" data-enabled="${s.enabled ? "1" : "0"}">
+              <button class="btn sm" data-toggle-id="${esc(s.id)}" data-enabled="${
+                s.enabled ? "1" : "0"
+              }">
                 ${s.enabled ? "Disable" : "Enable"}
               </button>
             </td>
-          </tr>`).join("")}
+          </tr>`
+            )
+            .join("")}
         </tbody></table>`;
       $("#sources-table").querySelectorAll("[data-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
@@ -206,9 +325,21 @@
     try {
       const st = await api("/api/v1/gdrive/status");
       $("#gdrive-status").innerHTML = `
-        <div>Client secrets: ${st.client_secrets_present ? '<span class="pill ok">present</span>' : '<span class="pill err">missing</span>'}</div>
-        <div style="margin-top:0.35rem">Token: ${st.token_present ? '<span class="pill ok">present</span>' : '<span class="pill warn">missing</span>'}</div>
-        <div style="margin-top:0.35rem">Authorized: ${st.authorized ? '<span class="pill ok">yes</span>' : '<span class="pill muted">no</span>'}</div>
+        <div>Client secrets: ${
+          st.client_secrets_present
+            ? '<span class="pill ok">present</span>'
+            : '<span class="pill err">missing</span>'
+        }</div>
+        <div style="margin-top:0.35rem">Token: ${
+          st.token_present
+            ? '<span class="pill ok">present</span>'
+            : '<span class="pill warn">missing</span>'
+        }</div>
+        <div style="margin-top:0.35rem">Authorized: ${
+          st.authorized
+            ? '<span class="pill ok">yes</span>'
+            : '<span class="pill muted">no</span>'
+        }</div>
         <div class="hint">${esc(st.client_secrets_path)}</div>`;
     } catch (e) {
       $("#gdrive-status").textContent = e.message;
@@ -221,16 +352,132 @@
     $("#torznab-url").textContent = `${host}/api?apikey=${key}`;
   }
 
+  function renderResolveResults(url, files) {
+    resolveShareUrl = url;
+    resolveFiles = (files || []).filter((f) => !f.is_folder);
+    const actions = $("#resolve-actions");
+    if (!resolveFiles.length) {
+      actions.classList.add("hidden");
+      $("#resolve-results").innerHTML = `<p class="muted">No downloadable files found in this share.</p>`;
+      return;
+    }
+    actions.classList.remove("hidden");
+    $("#resolve-count").textContent = `${resolveFiles.length} file(s)`;
+    $("#resolve-results").innerHTML = `<table>
+      <thead><tr>
+        <th><input type="checkbox" id="resolve-check-all" checked /></th>
+        <th>Name</th><th>Type</th><th>Size</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${resolveFiles
+          .map(
+            (f, i) => `<tr>
+          <td><input type="checkbox" class="resolve-check" data-idx="${i}" checked /></td>
+          <td class="title">${esc(f.name)}</td>
+          <td>${esc((f.mime_type || "file").split("/").pop())}</td>
+          <td>${f.size != null ? Math.round(f.size / 1048576) + " MiB" : "—"}</td>
+          <td class="actions">
+            <button class="btn sm primary" data-dfid="${esc(f.id)}" data-dname="${esc(f.name)}">Queue</button>
+          </td>
+        </tr>`
+          )
+          .join("")}
+      </tbody></table>`;
+
+    const master = $("#resolve-check-all");
+    if (master) {
+      master.addEventListener("change", () => {
+        $$(".resolve-check").forEach((c) => {
+          c.checked = master.checked;
+        });
+      });
+    }
+    $("#resolve-results").querySelectorAll("[data-dfid]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api("/api/v1/downloads", {
+            method: "POST",
+            body: {
+              title: btn.dataset.dname,
+              url: resolveShareUrl,
+              drive_file_id: btn.dataset.dfid,
+            },
+          });
+          toast("Queued Drive file download");
+        } catch (e) {
+          toast(e.message, true);
+        }
+      });
+    });
+  }
+
+  async function queueSelected(all) {
+    const indices = all
+      ? resolveFiles.map((_, i) => i)
+      : $$(".resolve-check")
+          .filter((c) => c.checked)
+          .map((c) => Number(c.dataset.idx));
+    const files = indices
+      .map((i) => resolveFiles[i])
+      .filter(Boolean)
+      .map((f) => ({ title: f.name, drive_file_id: f.id }));
+    if (!files.length) return toast("No files selected", true);
+    try {
+      const res = await api("/api/v1/downloads/bulk", {
+        method: "POST",
+        body: { url: resolveShareUrl, files },
+      });
+      toast(`Queued ${res.count} download(s)`);
+      if (res.errors && res.errors.length) {
+        toast(`${res.errors.length} failed to queue`, true);
+      }
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
   // Navigation
   $$(".nav-btn").forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view)));
 
-  // API key
+  // Login
+  $("#login-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    $("#login-error").classList.add("hidden");
+    try {
+      await api("/api/v1/auth/login", {
+        method: "POST",
+        body: {
+          username: $("#login-user").value.trim(),
+          password: $("#login-pass").value,
+        },
+      });
+      showLogin(false);
+      toast("Signed in");
+      loadDashboard();
+      checkAuth();
+    } catch (e) {
+      $("#login-error").textContent = e.message;
+      $("#login-error").classList.remove("hidden");
+    }
+  });
+
+  $("#logout-btn").addEventListener("click", async () => {
+    try {
+      await api("/api/v1/auth/logout", { method: "POST" });
+    } catch {
+      /* ignore */
+    }
+    showLogin(true);
+    $("#conn-status").textContent = "Logged out";
+    $("#conn-status").className = "pill muted";
+  });
+
+  // API key (Settings / Torznab only)
   const saved = localStorage.getItem(KEY);
-  if (saved) $("#api-key").value = saved;
+  if (saved && $("#api-key")) $("#api-key").value = saved;
   $("#save-key").addEventListener("click", () => {
     localStorage.setItem(KEY, $("#api-key").value.trim());
     toast("API key saved in this browser");
-    loadDashboard();
     updateSettings();
   });
 
@@ -250,7 +497,7 @@
   });
 
   $("#refresh-releases").addEventListener("click", loadReleases);
-  $("#refresh-downloads").addEventListener("click", loadDownloads);
+  $("#refresh-downloads").addEventListener("click", () => loadDownloads());
   $("#reload-sources").addEventListener("click", async () => {
     try {
       const r = await api("/api/v1/sources/reload", { method: "POST" });
@@ -265,7 +512,7 @@
     try {
       const r = await api("/api/v1/gdrive/auth-url");
       window.open(r.auth_url, "_blank", "noopener");
-      toast("Browser opened - after Allow, copy the full address bar and paste it below");
+      toast("Browser opened — after Allow, copy the full address bar and paste it below");
       const hint = $("#gdrive-hint");
       if (hint) {
         hint.innerHTML =
@@ -294,50 +541,44 @@
   $("#resolve-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const url = $("#resolve-url").value.trim();
-    $("#resolve-results").innerHTML = `<p class="muted">Resolving…</p>`;
+    $("#resolve-results").innerHTML = `<p class="muted">Resolving (including nested folders)…</p>`;
+    $("#resolve-actions").classList.add("hidden");
     try {
       const data = await api("/api/v1/gdrive/resolve", { method: "POST", body: { url } });
-      const files = data.files || [];
-      if (!files.length) {
-        $("#resolve-results").innerHTML = `<p class="muted">No files returned.</p>`;
-        return;
+      renderResolveResults(url, data.files || []);
+      if (data.file_count != null) {
+        toast(`Found ${data.file_count} downloadable file(s)`);
       }
-      $("#resolve-results").innerHTML = `<table>
-        <thead><tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr></thead>
-        <tbody>
-          ${files.map((f) => `<tr>
-            <td class="title">${esc(f.name)}</td>
-            <td>${f.is_folder ? "folder" : esc(f.mime_type || "file")}</td>
-            <td>${f.size != null ? Math.round(f.size / 1048576) + " MiB" : "—"}</td>
-            <td class="actions">
-              ${f.is_folder ? "" : `<button class="btn sm primary" data-dfid="${esc(f.id)}" data-dname="${esc(f.name)}">Queue</button>`}
-            </td>
-          </tr>`).join("")}
-        </tbody></table>`;
-      $("#resolve-results").querySelectorAll("[data-dfid]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          try {
-            await api("/api/v1/downloads", {
-              method: "POST",
-              body: {
-                title: btn.dataset.dname,
-                url,
-                drive_file_id: btn.dataset.dfid,
-              },
-            });
-            toast("Queued Drive file download");
-          } catch (e) {
-            toast(e.message, true);
-          }
-        });
-      });
     } catch (e) {
       $("#resolve-results").innerHTML = "";
       toast(e.message, true);
     }
   });
 
+  $("#resolve-select-all").addEventListener("click", () => {
+    $$(".resolve-check").forEach((c) => {
+      c.checked = true;
+    });
+    const m = $("#resolve-check-all");
+    if (m) m.checked = true;
+  });
+  $("#resolve-select-none").addEventListener("click", () => {
+    $$(".resolve-check").forEach((c) => {
+      c.checked = false;
+    });
+    const m = $("#resolve-check-all");
+    if (m) m.checked = false;
+  });
+  $("#resolve-download-selected").addEventListener("click", () => queueSelected(false));
+  $("#resolve-download-all").addEventListener("click", () => queueSelected(true));
+
   // Boot
   updateSettings();
-  if (apiKey()) loadDashboard();
+  (async () => {
+    const ok = await checkAuth();
+    if (ok) {
+      loadDashboard();
+      manageDownloadPolling();
+    }
+  })();
 })();

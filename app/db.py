@@ -1,11 +1,13 @@
 from .config import CONFIG_DIR, DB_PATH
 import sqlite3
 
+
 def connect():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     return db
+
 
 def init_db():
     with connect() as db:
@@ -19,6 +21,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS downloads (
           id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL,
           status TEXT NOT NULL, progress INTEGER DEFAULT 0,
-          path TEXT, error TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          path TEXT, error TEXT, drive_file_id TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        # Migrate older DBs that predate drive_file_id.
+        cols = {row[1] for row in db.execute("PRAGMA table_info(downloads)").fetchall()}
+        if "drive_file_id" not in cols:
+            db.execute("ALTER TABLE downloads ADD COLUMN drive_file_id TEXT")

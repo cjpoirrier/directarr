@@ -7,7 +7,18 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div id="login-overlay" class="login-overlay hidden">
+    <form id="login-form" class="login-card">
+      <h1>Directarr</h1>
+      <p class="muted">Sign in to continue</p>
+      <label>Username <input id="login-user" type="text" autocomplete="username" required /></label>
+      <label>Password <input id="login-pass" type="password" autocomplete="current-password" required /></label>
+      <button class="btn primary" type="submit">Log in</button>
+      <p id="login-error" class="err hidden"></p>
+    </form>
+  </div>
+
+  <div class="app" id="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <span class="logo">D</span>
@@ -26,17 +37,14 @@
         <button class="nav-btn" data-view="settings">Settings</button>
       </nav>
       <div class="sidebar-foot">
-        <span id="conn-status" class="pill muted">API key required</span>
+        <span id="conn-status" class="pill muted">…</span>
+        <button id="logout-btn" class="btn sm hidden" type="button">Log out</button>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
         <h1 id="view-title">Dashboard</h1>
-        <div class="top-actions">
-          <input id="api-key" type="password" placeholder="API key" autocomplete="off" />
-          <button id="save-key" class="btn">Save key</button>
-        </div>
       </header>
 
       <section id="view-dashboard" class="view active">
@@ -77,7 +85,10 @@
         <div class="panel">
           <div class="row between">
             <h2>Download queue</h2>
-            <button class="btn" id="refresh-downloads">Refresh</button>
+            <div class="row">
+              <span id="auto-refresh-label" class="hint">Auto-refresh on</span>
+              <button class="btn" id="refresh-downloads">Refresh</button>
+            </div>
           </div>
           <div id="downloads-table" class="table-wrap"></div>
         </div>
@@ -108,7 +119,7 @@
           </div>
           <p class="hint" id="gdrive-hint">
             Place Desktop OAuth client JSON at <code>config/credentials.json</code> first.
-            After you click Allow, the browser shows "localhost refused to connect" -- that is normal.
+            After you click Allow, the browser shows "localhost refused to connect" — that is normal.
             Copy the <strong>entire address bar</strong> and paste it above, then click Submit.
           </p>
         </div>
@@ -118,16 +129,35 @@
             <input id="resolve-url" type="url" placeholder="https://drive.google.com/drive/folders/..." required />
             <button class="btn primary" type="submit">Resolve</button>
           </form>
+          <div id="resolve-actions" class="row hidden" style="margin-top:0.75rem; gap:0.5rem; flex-wrap:wrap">
+            <button class="btn sm" type="button" id="resolve-select-all">Select all</button>
+            <button class="btn sm" type="button" id="resolve-select-none">Select none</button>
+            <button class="btn sm primary" type="button" id="resolve-download-selected">Download selected</button>
+            <button class="btn sm primary" type="button" id="resolve-download-all">Download all</button>
+            <span id="resolve-count" class="hint"></span>
+          </div>
           <div id="resolve-results" class="table-wrap"></div>
         </div>
       </section>
 
       <section id="view-settings" class="view">
         <div class="panel">
-          <h2>Connection</h2>
-          <p>Torznab URL (for Sonarr):</p>
+          <h2>Torznab (Sonarr / Radarr)</h2>
+          <p class="hint">External *Arr clients still use the API key. The web UI uses username/password when configured.</p>
+          <label>API key (for Torznab URL)
+            <input id="api-key" type="password" placeholder="DIRECTARR_API_KEY" autocomplete="off" />
+          </label>
+          <button id="save-key" class="btn" type="button">Save key in browser</button>
+          <p style="margin-top:1rem">Torznab URL:</p>
           <code id="torznab-url">http://localhost:8787/api?apikey=YOUR_KEY</code>
           <p class="hint" style="margin-top:1rem">API docs: <a href="/docs" target="_blank">/docs</a></p>
+        </div>
+        <div class="panel">
+          <h2>UI login</h2>
+          <p class="hint">
+            Set <code>DIRECTARR_USERNAME</code> and <code>DIRECTARR_PASSWORD</code> in the environment.
+            Leave password empty to disable forms login (session always allowed).
+          </p>
         </div>
       </section>
     </main>

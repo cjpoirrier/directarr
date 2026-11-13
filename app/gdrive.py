@@ -322,8 +322,64 @@ def list_folder(folder_id: str, page_size: int = 200) -> list[DriveItem]:
     return items
 
 
-def resolve_url(url: str) -> dict[str, Any]:
-    """Resolve a Drive share URL into metadata and, for folders, child files."""
+def list_folder_recursive(
+    folder_id: str,
+    *,
+    max_depth: int = 4,
+    max_files: int = 2000,
+    prefix: str = "",
+) -> list[dict[str, Any]]:
+    """Walk a folder tree and return downloadable file entries (not folders).
+
+    Nested folders are expanded up to max_depth. Google Workspace docs and
+    inaccessible items are skipped rather than failing the whole resolve.
+    """
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def walk(fid: str, depth: int, path_prefix: str) -> None:
+        if depth > max_depth or len(out) >= max_files:
+            return
+        try:
+            children = list_folder(fid)
+        except Exception:
+            return
+        for c in children:
+            if c.id in seen_ids:
+                continue
+            seen_ids.add(c.id)
+            display = f"{path_prefix}{c.name}" if path_prefix else c.name
+            if c.is_folder:
+                walk(c.id, depth + 1, f"{display}/")
+                continue
+            # Skip Google Workspace native types (need export, not binary media).
+            if (c.mime_type or "").startswith("application/vnd.google-apps."):
+                continue
+            out.append(
+                {
+                    "id": c.id,
+                    "name": display,
+                    "mime_type": c.mime_type,
+                    "size": c.size,
+                    "is_folder": False,
+                    "web_view_link": c.web_view_link,
+                    "download_hint": f"drive://{c.id}",
+                    "path": display,
+                }
+            )
+            if len(out) >= max_files:
+                return
+
+    walk(folder_id, 0, prefix)
+    return out
+
+
+def resolve_url(url: str, recursive: bool = True) -> dict[str, Any]:
+    """Resolve a Drive share URL into metadata and downloadable files.
+
+    When recursive is True (default), nested folders are expanded so the UI
+    can offer bulk select / download-all for an entire share.
+    """
     ref = parse_drive_url(url)
     meta = get_item_metadata(ref.file_id)
     result: dict[str, Any] = {
@@ -336,34 +392,45 @@ def resolve_url(url: str) -> dict[str, Any]:
         "web_view_link": meta.web_view_link,
         "kind": "folder" if meta.is_folder else "file",
         "files": [],
+        "skipped_folders": 0,
     }
     if meta.is_folder:
-        children = list_folder(meta.id)
-        result["files"] = [
-            {
-                "id": c.id,
-                "name": c.name,
-                "mime_type": c.mime_type,
-                "size": c.size,
-                "is_folder": c.is_folder,
-                "web_view_link": c.web_view_link,
-                # API media URL still requires Authorization: Bearer <token>
-                "download_hint": f"drive://{c.id}",
-            }
-            for c in children
-        ]
+        if recursive:
+            result["files"] = list_folder_recursive(meta.id)
+        else:
+            children = list_folder(meta.id)
+            result["files"] = [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "mime_type": c.mime_type,
+                    "size": c.size,
+                    "is_folder": c.is_folder,
+                    "web_view_link": c.web_view_link,
+                    "download_hint": f"drive://{c.id}",
+                }
+                for c in children
+            ]
+            result["skipped_folders"] = sum(1 for c in children if c.is_folder)
     else:
-        result["files"] = [
-            {
-                "id": meta.id,
-                "name": meta.name,
-                "mime_type": meta.mime_type,
-                "size": meta.size,
-                "is_folder": False,
-                "web_view_link": meta.web_view_link,
-                "download_hint": f"drive://{meta.id}",
-            }
-        ]
+        if (meta.mime_type or "").startswith("application/vnd.google-apps."):
+            result["files"] = []
+            result["error"] = (
+                f"Google Workspace file ({meta.mime_type}) cannot be downloaded as binary."
+            )
+        else:
+            result["files"] = [
+                {
+                    "id": meta.id,
+                    "name": meta.name,
+                    "mime_type": meta.mime_type,
+                    "size": meta.size,
+                    "is_folder": False,
+                    "web_view_link": meta.web_view_link,
+                    "download_hint": f"drive://{meta.id}",
+                }
+            ]
+    result["file_count"] = len(result["files"])
     return result
 
 

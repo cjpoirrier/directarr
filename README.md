@@ -15,14 +15,21 @@ The Torznab indexer API can be added to Sonarr as a Torznab custom indexer. Howe
 
 ## Run
 1. Copy `.env.example` to `.env` and set a long random `DIRECTARR_API_KEY`.
-2. `docker compose up -d --build`
-3. Open the web UI at `http://YOUR-SERVER-IP:8787/` (enter your API key in the top bar).
-4. API docs: `http://YOUR-SERVER-IP:8787/docs`.
+2. Optionally set `DIRECTARR_USERNAME` / `DIRECTARR_PASSWORD` for Sonarr-style web UI login.
+   Leave `DIRECTARR_PASSWORD` empty to skip the login screen.
+3. `docker compose up -d --build`
+4. Open the web UI at `http://YOUR-SERVER-IP:8787/`.
+5. API docs: `http://YOUR-SERVER-IP:8787/docs`.
 
 Local (no Docker): from the project root, with deps installed:
-`DIRECTARR_API_KEY=your-key python -m uvicorn app.main:app --host 0.0.0.0 --port 8787`
+`DIRECTARR_API_KEY=your-key DIRECTARR_PASSWORD=secret python -m uvicorn app.main:app --host 0.0.0.0 --port 8787`
 
-Torznab URL: `http://YOUR-SERVER-IP:8787/api?apikey=YOUR_KEY`
+Torznab URL (still uses the API key): `http://YOUR-SERVER-IP:8787/api?apikey=YOUR_KEY`
+
+### Authentication
+- **Web UI**: forms login with `DIRECTARR_USERNAME` + `DIRECTARR_PASSWORD` (session cookie). If password is empty, the UI is open.
+- **Torznab / external clients**: `apikey` query param or `X-Api-Key` header (unchanged).
+- **`/api/v1/*`**: accepts either a valid session or API key.
 
 ## Configure sources
 Edit `config/sources.json`. Built-in adapters:

@@ -1,5 +1,7 @@
 import asyncio
+import errno
 import ipaddress
+import os
 import shutil
 import socket
 import uuid
@@ -11,6 +13,39 @@ import httpx
 from . import gdrive
 from .config import ALLOWED_HOSTS, DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, STAGING_DIR
 from .db import connect
+
+
+def safe_move(src: Path, dest: Path) -> Path:
+    """Move src to dest, handling cross-device (Errno 18) by copy+verify+unlink.
+
+    Staging and downloads often live on different Docker volume mounts, so
+    os.rename / shutil.move can fail with EXDEV. Only remove the staging file
+    after the destination has been written and size-verified.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    try:
+        os.rename(src, dest)
+        return dest
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    # Cross-device: copy, verify, then remove source.
+    shutil.copy2(src, dest)
+    try:
+        src_size = src.stat().st_size
+        dest_size = dest.stat().st_size
+        if src_size != dest_size:
+            dest.unlink(missing_ok=True)
+            raise OSError(
+                f"Cross-device copy size mismatch: source={src_size} dest={dest_size}"
+            )
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    src.unlink(missing_ok=True)
+    return dest
 
 
 def validate_public_url(url: str) -> str:
@@ -39,19 +74,32 @@ def _safe_filename(title: str, job_id: str) -> str:
     return safe or job_id
 
 
+def _staging_path(job_id: str) -> Path:
+    return STAGING_DIR / f"{job_id}.part"
+
+
+def _part_is_nearly_complete(temp: Path, min_bytes: int = 1024 * 1024) -> bool:
+    """True when a staging file looks finished (typical after a move-only failure)."""
+    try:
+        return temp.is_file() and temp.stat().st_size >= min_bytes
+    except OSError:
+        return False
+
+
 def enqueue(title: str, url: str, drive_file_id: str | None = None) -> str:
     """Validate and insert a queued job. Caller schedules run_download."""
+    cleaned_id = None
     if drive_file_id:
-        cleaned = drive_file_id.strip()
-        if not cleaned or not all(c.isalnum() or c in "-_" for c in cleaned):
+        cleaned_id = drive_file_id.strip()
+        if not cleaned_id or not all(c.isalnum() or c in "-_" for c in cleaned_id):
             raise ValueError("Invalid drive_file_id.")
     else:
         validate_public_url(url)
     job_id = str(uuid.uuid4())
     with connect() as db:
         db.execute(
-            "INSERT INTO downloads(id,title,url,status) VALUES(?,?,?,'queued')",
-            (job_id, title, url),
+            "INSERT INTO downloads(id,title,url,status,drive_file_id) VALUES(?,?,?,'queued',?)",
+            (job_id, title, url, cleaned_id),
         )
     return job_id
 
@@ -61,36 +109,77 @@ async def run_download(
     title: str,
     url: str,
     drive_file_id: str | None = None,
+    *,
+    finalize_only: bool = False,
 ):
-    temp = STAGING_DIR / f"{job_id}.part"
+    temp = _staging_path(job_id)
     target = DOWNLOAD_DIR / _safe_filename(title, job_id)
     try:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         STAGING_DIR.mkdir(parents=True, exist_ok=True)
         with connect() as db:
             db.execute(
-                "UPDATE downloads SET status='downloading',progress=0 WHERE id=?",
+                "UPDATE downloads SET status='downloading',progress=0,error=NULL,path=NULL WHERE id=?",
                 (job_id,),
             )
 
-        if drive_file_id or gdrive.is_drive_url(url):
+        if finalize_only and _part_is_nearly_complete(temp):
+            # Previous attempt already wrote the payload; only complete the move.
+            with connect() as db:
+                db.execute(
+                    "UPDATE downloads SET progress=99 WHERE id=?",
+                    (job_id,),
+                )
+            target = safe_move(temp, target)
+        elif drive_file_id or gdrive.is_drive_url(url):
             target = await _download_drive(job_id, title, url, temp, drive_file_id)
         else:
             await _download_http(job_id, url, temp)
-            shutil.move(temp, target)
+            target = safe_move(temp, target)
 
         with connect() as db:
             db.execute(
-                "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=?",
+                "UPDATE downloads SET status='completed',progress=100,path=?,error=NULL WHERE id=?",
                 (str(target), job_id),
             )
     except Exception as exc:
-        temp.unlink(missing_ok=True)
+        # Keep a near-complete .part so retry can finalize without re-downloading.
+        # Drop small/partial staging files to avoid filling the volume.
+        if temp.exists() and not _part_is_nearly_complete(temp):
+            temp.unlink(missing_ok=True)
         with connect() as db:
             db.execute(
                 "UPDATE downloads SET status='failed',error=? WHERE id=?",
                 (str(exc)[:1000], job_id),
             )
+
+
+def prepare_retry(job_id: str) -> dict:
+    """Reset a failed job for retry. Returns fields needed to re-run.
+
+    If a substantial staging .part still exists (typical after a cross-device
+    move failure), the next run finalizes only instead of re-downloading.
+    """
+    with connect() as db:
+        row = db.execute("SELECT * FROM downloads WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError("Job not found")
+        job = dict(row)
+        if job.get("status") != "failed":
+            raise ValueError(
+                f"Only failed jobs can be retried (status={job.get('status')})"
+            )
+
+        temp = _staging_path(job_id)
+        finalize_only = _part_is_nearly_complete(temp)
+        db.execute(
+            """UPDATE downloads
+               SET status='queued', progress=0, error=NULL, path=NULL
+               WHERE id=?""",
+            (job_id,),
+        )
+    job["finalize_only"] = finalize_only
+    return job
 
 
 async def _download_http(job_id: str, url: str, temp: Path) -> None:
@@ -159,5 +248,4 @@ async def _download_drive(
 
     await asyncio.to_thread(gdrive.download_file_to_path, file_id, temp, progress_cb)
     target = DOWNLOAD_DIR / dest_name
-    shutil.move(temp, target)
-    return target
+    return safe_move(temp, target)
