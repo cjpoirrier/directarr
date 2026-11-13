@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .config import CONFIG_DIR, GDRIVE_CLIENT_SECRETS, GDRIVE_SCOPES, GDRIVE_TOKEN_PATH
+from .config import (
+    CONFIG_DIR,
+    GDRIVE_CLIENT_SECRETS,
+    GDRIVE_REDIRECT_URI,
+    GDRIVE_SCOPES,
+    GDRIVE_TOKEN_PATH,
+    PUBLIC_BASE_URL,
+)
 
 # Lazy imports so the rest of the app starts without Google libs installed.
 _google_ready = False
@@ -187,13 +194,21 @@ def _load_credentials():
     )
 
 
-def build_auth_url(redirect_uri: str = "http://localhost") -> dict[str, str]:
+def _default_redirect_uri() -> str:
+    """Prefer server callback when PUBLIC_URL is set; else localhost paste flow."""
+    if GDRIVE_REDIRECT_URI:
+        return GDRIVE_REDIRECT_URI
+    return "http://localhost"
+
+
+def build_auth_url(redirect_uri: str | None = None) -> dict[str, str]:
     """Start OAuth and return a browser URL + state.
 
-    Uses the loopback redirect (http://localhost) required by modern Google
-    Desktop OAuth clients. The browser will fail to load the page after consent;
-    copy the `code` parameter from the address bar and POST it to
-    /api/v1/gdrive/auth-code.
+    Preferred path: set DIRECTARR_PUBLIC_URL (e.g. http://10.0.0.93:8787) and
+    register the same callback in Google Cloud Console as a Web application
+    redirect URI. Google then sends the code to the backend automatically.
+
+    Fallback: http://localhost paste-the-URL flow when no public URL is configured.
     """
     _ensure_google()
     from google_auth_oauthlib.flow import Flow
@@ -202,56 +217,75 @@ def build_auth_url(redirect_uri: str = "http://localhost") -> dict[str, str]:
     if not secrets_path.is_file():
         raise RuntimeError(f"Missing OAuth client secrets at {secrets_path}")
 
+    redirect_uri = (redirect_uri or _default_redirect_uri()).rstrip("/")
     flow = Flow.from_client_secrets_file(
         str(secrets_path),
         scopes=GDRIVE_SCOPES,
         redirect_uri=redirect_uri,
     )
-    # PKCE is enabled by default for Desktop clients; we must persist the
-    # code_verifier so the later token exchange can include it.
+    # PKCE is enabled by default for public clients; persist code_verifier.
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
     code_verifier = getattr(flow, "code_verifier", None) or ""
-    # Persist state + redirect + PKCE verifier for the code exchange step.
     state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
         f"{state}\n{redirect_uri}\n{code_verifier}\n",
         encoding="utf-8",
     )
-    return {"auth_url": auth_url, "state": state, "redirect_uri": redirect_uri}
+    mode = "callback" if redirect_uri != "http://localhost" and "callback" in redirect_uri else "paste"
+    return {
+        "auth_url": auth_url,
+        "state": state,
+        "redirect_uri": redirect_uri,
+        "mode": mode,
+        "public_base_url": PUBLIC_BASE_URL or None,
+    }
 
 
 def _extract_oauth_code(value: str) -> str:
-    """Accept either a bare authorization code or the full localhost redirect URL."""
+    """Accept either a bare authorization code or a full redirect URL."""
     value = (value or "").strip()
     if not value:
         raise ValueError("Empty authorization code.")
-    # User pasted the entire redirect URL: http://localhost/?code=...&state=...
     if "code=" in value or value.startswith("http://") or value.startswith("https://"):
         parsed = urlparse(value)
         qs = parse_qs(parsed.query)
         if "code" in qs and qs["code"]:
             return qs["code"][0].strip()
-        # Also handle rare fragment-style responses
         frag = parse_qs(parsed.fragment)
         if "code" in frag and frag["code"]:
             return frag["code"][0].strip()
         raise ValueError(
-            "Could not find a 'code' parameter in the pasted URL. "
-            "Paste the full address-bar URL after Google redirects to localhost."
+            "Could not find a 'code' parameter in the pasted URL."
         )
     return value
 
 
-def exchange_auth_code(code: str) -> dict[str, Any]:
+def _load_oauth_state() -> tuple[str, str, str | None]:
+    """Return (state, redirect_uri, code_verifier) from the pending auth file."""
+    state_path = CONFIG_DIR / "gdrive_oauth_state.txt"
+    redirect_uri = _default_redirect_uri()
+    expected_state = ""
+    code_verifier = None
+    if state_path.is_file():
+        lines = state_path.read_text(encoding="utf-8").strip().splitlines()
+        if lines:
+            expected_state = lines[0].strip()
+        if len(lines) >= 2 and lines[1].strip():
+            redirect_uri = lines[1].strip()
+        if len(lines) >= 3 and lines[2].strip():
+            code_verifier = lines[2].strip()
+    return expected_state, redirect_uri, code_verifier
+
+
+def exchange_auth_code(code: str, state: str | None = None) -> dict[str, Any]:
     """Exchange an authorization code for a refreshable token.json.
 
-    Accepts either the bare code or the full http://localhost/?code=... URL
-    so the operator can paste the entire address bar after consent.
+    Used by both the server callback and the manual paste fallback.
     """
     _ensure_google()
     from google_auth_oauthlib.flow import Flow
@@ -262,15 +296,9 @@ def exchange_auth_code(code: str) -> dict[str, Any]:
         raise RuntimeError(f"Missing OAuth client secrets at {secrets_path}")
 
     code = _extract_oauth_code(code)
-
-    redirect_uri = "http://localhost"
-    code_verifier = None
-    if state_path.is_file():
-        lines = state_path.read_text(encoding="utf-8").strip().splitlines()
-        if len(lines) >= 2:
-            redirect_uri = lines[1].strip() or redirect_uri
-        if len(lines) >= 3 and lines[2].strip():
-            code_verifier = lines[2].strip()
+    expected_state, redirect_uri, code_verifier = _load_oauth_state()
+    if state and expected_state and state.strip() != expected_state:
+        raise ValueError("OAuth state mismatch — start authorization again.")
 
     flow = Flow.from_client_secrets_file(
         str(secrets_path),
@@ -286,7 +314,11 @@ def exchange_auth_code(code: str) -> dict[str, Any]:
     Path(GDRIVE_TOKEN_PATH).write_text(creds.to_json(), encoding="utf-8")
     if state_path.is_file():
         state_path.unlink(missing_ok=True)
-    return {"authorized": True, "token_path": str(GDRIVE_TOKEN_PATH)}
+    return {
+        "authorized": True,
+        "token_path": str(GDRIVE_TOKEN_PATH),
+        "redirect_uri": redirect_uri,
+    }
 
 
 def _service():

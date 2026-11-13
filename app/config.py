@@ -76,3 +76,11 @@ GDRIVE_SCOPES = [
     ).split(",")
     if s.strip()
 ]
+# Public base URL of this Directarr instance (no trailing slash), e.g.
+# http://10.0.0.93:8787 — used to build the OAuth callback so Google returns
+# the code to the backend and the user never pastes it.
+PUBLIC_BASE_URL = (os.getenv("DIRECTARR_PUBLIC_URL") or "").rstrip("/")
+GDRIVE_REDIRECT_URI = (
+    os.getenv("DIRECTARR_GDRIVE_REDIRECT_URI")
+    or (f"{PUBLIC_BASE_URL}/api/v1/gdrive/callback" if PUBLIC_BASE_URL else "")
+)

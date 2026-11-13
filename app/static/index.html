@@ -109,21 +109,23 @@
           <h2>Google Drive authorization</h2>
           <div id="gdrive-status" class="muted">Loading...</div>
           <div id="gdrive-auth-panel" class="gdrive-auth-panel hidden">
-            <ol class="auth-steps">
-              <li>Ensure <code>config/credentials.json</code> is a Desktop OAuth client with redirect <code>http://localhost</code>.</li>
-              <li>Click <strong>Connect Google Drive</strong> and sign in with the account that can open the shares.</li>
-              <li>After Allow, the browser shows "localhost refused to connect" — that is expected.</li>
-              <li>Copy the <strong>entire address bar</strong>, paste it below, and click Finish.</li>
+            <ol class="auth-steps" id="gdrive-auth-steps">
+              <li>Put a Google OAuth client JSON at <code>config/credentials.json</code>.</li>
+              <li>Set <code>DIRECTARR_PUBLIC_URL</code> to this server (e.g. <code>http://10.0.0.93:8787</code>) and add the callback URI in Google Cloud Console.</li>
+              <li>Click <strong>Connect Google Drive</strong>, sign in, and Allow — the backend finishes automatically.</li>
             </ol>
             <div class="row" style="margin-top:0.75rem; flex-wrap:wrap">
               <button class="btn primary" id="gdrive-auth-url" type="button">Connect Google Drive</button>
               <button class="btn" id="gdrive-disconnect" type="button">Disconnect</button>
             </div>
-            <div class="row" style="margin-top:0.75rem">
-              <input id="gdrive-code" type="text" placeholder="Paste full http://localhost/?code=... URL here" />
-              <button class="btn primary" id="gdrive-auth-code" type="button">Finish authorization</button>
+            <div id="gdrive-paste-fallback" class="hidden" style="margin-top:0.75rem">
+              <p class="hint">Fallback (no public URL configured): after Allow, paste the full <code>http://localhost/?code=...</code> address bar URL:</p>
+              <div class="row">
+                <input id="gdrive-code" type="text" placeholder="Paste full http://localhost/?code=... URL here" />
+                <button class="btn primary" id="gdrive-auth-code" type="button">Finish authorization</button>
+              </div>
             </div>
-            <p class="hint" id="gdrive-hint">You only need to do this once until the token expires or is revoked.</p>
+            <p class="hint" id="gdrive-hint">Preferred setup uses a server callback so you never paste codes.</p>
             <p id="gdrive-auth-feedback" class="hint"></p>
           </div>
         </div>

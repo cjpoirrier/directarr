@@ -16,6 +16,8 @@ services:
       DIRECTARR_STAGING_DIR: /staging
       DIRECTARR_MAX_DOWNLOAD_MB: ${DIRECTARR_MAX_DOWNLOAD_MB:-20000}
       DIRECTARR_ALLOWED_HOSTS: ${DIRECTARR_ALLOWED_HOSTS:-}
+      # e.g. http://10.0.0.93:8787 — enables one-click Google OAuth (no code paste)
+      DIRECTARR_PUBLIC_URL: ${DIRECTARR_PUBLIC_URL:-}
     volumes:
       - ./config:/config
       - ./downloads:/downloads

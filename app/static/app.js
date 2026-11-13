@@ -626,13 +626,24 @@
 
   $("#gdrive-auth-url").addEventListener("click", async () => {
     const feedback = $("#gdrive-auth-feedback");
+    const pasteBox = $("#gdrive-paste-fallback");
     try {
       const r = await api("/api/v1/gdrive/auth-url");
       window.open(r.auth_url, "_blank", "noopener");
-      toast("Google sign-in opened — finish in the new tab, then paste the localhost URL here");
-      if (feedback) {
-        feedback.innerHTML =
-          "Waiting for the authorization code. After Allow, copy the full <code>http://localhost/?code=...</code> URL from the address bar.";
+      if (r.mode === "callback") {
+        toast("Google sign-in opened — finish there; this page will update when you return");
+        if (pasteBox) pasteBox.classList.add("hidden");
+        if (feedback) {
+          feedback.innerHTML =
+            "Complete sign-in in the other tab. Google redirects back to Directarr and the backend saves the token automatically.";
+        }
+      } else {
+        toast("Google sign-in opened — after Allow, paste the localhost URL below");
+        if (pasteBox) pasteBox.classList.remove("hidden");
+        if (feedback) {
+          feedback.innerHTML =
+            "No <code>DIRECTARR_PUBLIC_URL</code> configured, so paste mode is active. Copy the full <code>http://localhost/?code=...</code> URL after Allow.";
+        }
       }
     } catch (e) {
       toast(e.message, true);
@@ -715,4 +726,31 @@
       manageDownloadPolling();
     }
   })();
+
+  // Handle OAuth callback return (?gdrive=connected|error)
+  (function handleGdriveReturn() {
+    const params = new URLSearchParams(location.search);
+    const gdrive = params.get("gdrive");
+    if (!gdrive) return;
+    const feedback = () => $("#gdrive-auth-feedback");
+    if (gdrive === "connected") {
+      toast("Google Drive connected");
+      setView("gdrive");
+      loadGdrive();
+      if (feedback()) feedback().innerHTML = '<span class="pill ok">Connected</span> Authorization completed by the server.';
+    } else if (gdrive === "error") {
+      const msg = params.get("message") || "Authorization failed";
+      toast(msg, true);
+      setView("gdrive");
+      if (feedback()) feedback().innerHTML = '<span class="pill err">Failed</span> ' + esc(msg);
+    }
+    // Clean query string without reloading
+    try {
+      const url = new URL(location.href);
+      url.searchParams.delete("gdrive");
+      url.searchParams.delete("message");
+      history.replaceState({}, "", url.pathname + url.search + url.hash);
+    } catch (_) {}
+  })();
+
 })();

@@ -2,7 +2,7 @@ import hmac
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -410,11 +410,44 @@ def gdrive_auth_url(_auth=Depends(require_auth)):
         raise HTTPException(400, str(exc))
 
 
+@app.get("/api/v1/gdrive/callback")
+def gdrive_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    """Google redirects here after consent. Backend exchanges the code — no paste step.
+
+    Does not require session auth: the OAuth `state` parameter is the CSRF check.
+    """
+    from .config import PUBLIC_BASE_URL
+
+    ui = (PUBLIC_BASE_URL or "").rstrip("/") or ""
+    # Fall back to relative redirect into the SPA.
+    success_path = f"{ui}/?gdrive=connected#gdrive" if ui else "/?gdrive=connected"
+    error_path = f"{ui}/?gdrive=error" if ui else "/?gdrive=error"
+
+    if error:
+        return RedirectResponse(f"{error_path}&message={error}", status_code=302)
+    if not code:
+        return RedirectResponse(f"{error_path}&message=missing_code", status_code=302)
+    try:
+        gdrive.exchange_auth_code(code, state=state)
+        return RedirectResponse(success_path, status_code=302)
+    except Exception as exc:
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"{error_path}&message={quote(str(exc)[:200])}",
+            status_code=302,
+        )
+
+
 @app.post("/api/v1/gdrive/auth-code")
 def gdrive_auth_code(
     body: DriveAuthCodeRequest,
     _auth=Depends(require_auth),
 ):
+    """Manual paste fallback when server callback is not configured."""
     try:
         return gdrive.exchange_auth_code(body.code)
     except Exception as exc:
