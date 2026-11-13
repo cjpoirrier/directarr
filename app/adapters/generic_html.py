@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .base import Release, SourceAdapter
+from ..open_redirect import is_open_interstitial, resolve_interstitial, is_drive_url as _is_drive
 
 USER_AGENT = "Directarr/0.2 self-hosted indexer"
 DRIVE_HOSTS = {"drive.google.com", "docs.google.com"}
@@ -158,6 +159,21 @@ class GenericHtmlAdapter(SourceAdapter):
                     page.raise_for_status()
                     page_soup = BeautifulSoup(page.text, "html.parser")
                     dlinks = self._extract_download_links(page_soup, post_url)
+                    # Resolve /open/?id= interstitials to real Drive (or shortener) URLs
+                    resolved: list[tuple[str, str]] = []
+                    for label, dlink in dlinks:
+                        if is_open_interstitial(dlink):
+                            try:
+                                dest = resolve_interstitial(
+                                    dlink, referer=post_url, timeout=self.timeout
+                                )
+                                resolved.append((label, dest))
+                            except Exception:
+                                # Keep open link; queue path may retry resolve
+                                resolved.append((label, dlink))
+                        else:
+                            resolved.append((label, dlink))
+                    dlinks = resolved
                     if not dlinks:
                         # Don't queue the HTML post page as a "download" — mark clearly
                         releases.append(

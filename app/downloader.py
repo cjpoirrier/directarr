@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import httpx
 
 from . import gdrive
+from .open_redirect import is_open_interstitial, resolve_interstitial, is_drive_url as open_is_drive
 from .config import (
     ALLOWED_HOSTS,
     DOWNLOAD_CONNECTIONS,
@@ -137,7 +138,15 @@ async def run_download(
                 (job_id,),
             )
 
-        if drive_file_id or gdrive.is_drive_url(url):
+        # AnimeKaizen-style /open/?id= pages embed the real Drive URL
+        if not drive_file_id and is_open_interstitial(url):
+            try:
+                dest = await asyncio.to_thread(resolve_interstitial, url)
+                url = dest
+            except Exception as exc:
+                raise ValueError(f"Could not resolve open/redirect link: {exc}") from exc
+
+        if drive_file_id or gdrive.is_drive_url(url) or open_is_drive(url):
             target = await _download_drive(job_id, title, url, temp, drive_file_id)
         else:
             segment_paths = await _download_http(job_id, url, temp)
