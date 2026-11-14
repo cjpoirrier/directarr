@@ -214,6 +214,8 @@ async def grab_release(
     """Torznab grab handoff: queues a Directarr download job when Sonarr fetches the enclosure.
 
     Optional drive_file_id + title select a single resolved file from a Drive folder.
+    Returns a minimal .torrent so Sonarr treats the grab as successful; the real
+    file is downloaded by Directarr into the shared downloads folder.
     """
     key = apikey or x_api_key or ""
     require_key(key)
@@ -230,9 +232,18 @@ async def grab_release(
         raise HTTPException(400, str(exc))
     background_tasks.add_task(run_download, job_id, job_title, url, fid)
     add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=job_title)
-    return JSONResponse(
-        {"ok": True, "id": job_id, "status": "queued", "title": job_title, "drive_file_id": fid},
-        status_code=200,
+
+    # Minimal valid-looking torrent response so Sonarr accepts the grab.
+    # The actual media is downloaded by Directarr into the downloads volume.
+    dummy = (
+        b"d8:announce0:4:info"
+        b"d4:name" + str(len(job_title)).encode() + b":" + job_title.encode() +
+        b"12:piece lengthi16384e6:pieces0:ee"
+    )
+    return Response(
+        content=dummy,
+        media_type="application/x-bittorrent",
+        headers={"Content-Disposition": f'attachment; filename="{job_id}.torrent"'},
     )
 
 

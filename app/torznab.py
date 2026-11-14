@@ -49,15 +49,19 @@ def _file_matches(name: str, want_season, want_episode) -> bool:
     if want_season is not None and want_episode is not None:
         if s == want_season and e == want_episode:
             return True
-        # also accept title-only episode tags
-        return episode_matches_row(
-            row_season=s,
-            row_episode=e,
-            title=name or "",
-            want_season=want_season,
-            want_episode=want_episode,
-            allow_season_pack=False,
-        )
+        # Common patterns: S01E01, 1x01, E01, - 01., [01]
+        compact = re.sub(r"[\s._\-\[\]()]", "", (name or "").lower())
+        tag = f"s{int(want_season):02d}e{int(want_episode):02d}"
+        tag2 = f"s{int(want_season)}e{int(want_episode)}"
+        x_tag = f"{int(want_season)}x{int(want_episode):02d}"
+        if tag in compact or tag2 in compact or x_tag in compact:
+            return True
+        # Bare episode number with word boundaries when season is 1 and title has S01 or Season 1 context is weak;
+        # only accept if the name clearly contains the episode token and not a pack marker.
+        if re.search(rf"(?i)(?:^|[\s._\-])0*{int(want_episode)}(?:[\s._\-]|$)|\be{int(want_episode):02d}\b", name or ""):
+            if not re.search(r"(?i)season\s*\d+\s*-\s*\d+|complete|batch|pack|ovas", name or ""):
+                return True
+        return False
     if want_season is not None:
         return s == want_season
     if want_episode is not None:
@@ -66,7 +70,10 @@ def _file_matches(name: str, want_season, want_episode) -> bool:
 
 
 def _try_resolve_files(url: str):
-    """Return list of {name, id, size, url} from a Drive share, or empty list."""
+    """Return list of {name, id, size, url} from a Drive share, or empty list.
+
+    Handles both DriveItem objects and plain dicts from resolve_url.
+    """
     try:
         from . import gdrive
         if not gdrive.is_drive_url(url):
@@ -78,11 +85,18 @@ def _try_resolve_files(url: str):
         files = resolved.get("files") or []
         out = []
         for f in files:
-            if getattr(f, "is_folder", False):
-                continue
-            name = getattr(f, "name", "") or ""
-            fid = getattr(f, "id", "") or ""
-            size = getattr(f, "size", None)
+            if isinstance(f, dict):
+                if f.get("is_folder"):
+                    continue
+                name = f.get("name") or ""
+                fid = f.get("id") or ""
+                size = f.get("size") or 0
+            else:
+                if getattr(f, "is_folder", False):
+                    continue
+                name = getattr(f, "name", "") or ""
+                fid = getattr(f, "id", "") or ""
+                size = getattr(f, "size", None) or 0
             if name and fid:
                 out.append({
                     "name": name,
