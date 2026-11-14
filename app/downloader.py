@@ -167,13 +167,127 @@ def _safe_filename(title: str, job_id: str) -> str:
     return safe or job_id
 
 
-def _set_progress(job_id: str, progress: int) -> None:
+def _set_progress(
+    job_id: str,
+    progress: int,
+    *,
+    size_bytes: int | None = None,
+    bytes_done: int | None = None,
+) -> None:
     _check_cancelled(job_id)
+    fields = ["progress=?"]
+    values: list = [min(99, max(0, int(progress)))]
+    if size_bytes is not None and size_bytes >= 0:
+        fields.append("size_bytes=?")
+        values.append(int(size_bytes))
+    if bytes_done is not None and bytes_done >= 0:
+        fields.append("bytes_done=?")
+        values.append(int(bytes_done))
+    values.append(job_id)
     with connect() as db:
         db.execute(
-            "UPDATE downloads SET progress=? WHERE id=?",
-            (min(99, max(0, int(progress))), job_id),
+            f"UPDATE downloads SET {', '.join(fields)} WHERE id=?",
+            tuple(values),
         )
+
+
+def _set_size(job_id: str, size_bytes: int | None) -> None:
+    if size_bytes is None or size_bytes < 0:
+        return
+    with connect() as db:
+        db.execute(
+            "UPDATE downloads SET size_bytes=? WHERE id=? AND (size_bytes IS NULL OR size_bytes=0)",
+            (int(size_bytes), job_id),
+        )
+
+
+def remove_jobs_from_list(job_ids: list[str]) -> dict:
+    """Remove jobs from the DB list only (does not delete files on disk)."""
+    cleaned = [j.strip() for j in job_ids if j and str(j).strip()]
+    if not cleaned:
+        return {"removed": 0, "ids": []}
+    for jid in cleaned:
+        cancel_job(jid)
+    placeholders = ",".join("?" * len(cleaned))
+    with connect() as db:
+        cur = db.execute(
+            f"DELETE FROM downloads WHERE id IN ({placeholders})", cleaned
+        )
+        removed = cur.rowcount if cur is not None else 0
+    return {"removed": removed, "ids": cleaned}
+
+
+def delete_job_files(job_ids: list[str]) -> dict:
+    """Delete physical files for jobs under DOWNLOAD_DIR / STAGING_DIR only.
+
+    Does not remove the job from the list. Clears path when the file is gone.
+    """
+    cleaned = [j.strip() for j in job_ids if j and str(j).strip()]
+    deleted: list[str] = []
+    missing: list[str] = []
+    errors: list[dict] = []
+    download_root = DOWNLOAD_DIR.resolve()
+    staging_root = STAGING_DIR.resolve()
+
+    def _safe_unlink(path: Path) -> bool:
+        try:
+            resolved = path.resolve()
+            if not (
+                resolved == download_root
+                or download_root in resolved.parents
+                or resolved == staging_root
+                or staging_root in resolved.parents
+            ):
+                raise ValueError("Path is outside download/staging directories")
+            if resolved.is_file():
+                resolved.unlink()
+                return True
+            return False
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    for jid in cleaned:
+        with connect() as db:
+            row = db.execute(
+                "SELECT path FROM downloads WHERE id=?", (jid,)
+            ).fetchone()
+        if row is None:
+            missing.append(jid)
+            continue
+        path_str = row["path"] if hasattr(row, "keys") else row[0]
+        removed_any = False
+        try:
+            if path_str:
+                if _safe_unlink(Path(path_str)):
+                    removed_any = True
+            # staging leftovers
+            for candidate in (
+                STAGING_DIR / f"{jid}.part",
+                *(STAGING_DIR.glob(f"{jid}.part.*")),
+            ):
+                try:
+                    if _safe_unlink(candidate):
+                        removed_any = True
+                except Exception:
+                    pass
+            if removed_any:
+                deleted.append(jid)
+                with connect() as db:
+                    db.execute(
+                        "UPDATE downloads SET path=NULL WHERE id=?",
+                        (jid,),
+                    )
+            else:
+                missing.append(jid)
+        except Exception as exc:
+            errors.append({"id": jid, "error": str(exc)[:300]})
+
+    return {
+        "deleted": deleted,
+        "missing": missing,
+        "errors": errors,
+        "deleted_count": len(deleted),
+    }
 
 
 def enqueue(title: str, url: str, drive_file_id: str | None = None) -> str:
@@ -232,11 +346,24 @@ async def run_download(
             safe_move(temp, target)
 
         _check_cancelled(job_id)
+        final_size = None
+        try:
+            if target.is_file():
+                final_size = target.stat().st_size
+        except OSError:
+            pass
         with connect() as db:
-            db.execute(
-                "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=? AND status!='cancelled'",
-                (str(target), job_id),
-            )
+            if final_size is not None:
+                db.execute(
+                    "UPDATE downloads SET status='completed',progress=100,path=?,size_bytes=?,bytes_done=? "
+                    "WHERE id=? AND status!='cancelled'",
+                    (str(target), final_size, final_size, job_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=? AND status!='cancelled'",
+                    (str(target), job_id),
+                )
     except DownloadCancelled:
         temp.unlink(missing_ok=True)
         for p in segment_paths:
@@ -315,6 +442,8 @@ async def _download_http(job_id: str, url: str, temp: Path) -> list[Path]:
     limits = httpx.Limits(max_connections=DOWNLOAD_CONNECTIONS + 2, max_keepalive_connections=DOWNLOAD_CONNECTIONS)
     async with httpx.AsyncClient(timeout=None, follow_redirects=True, limits=limits) as client:
         final_url, size, accept_ranges = await _probe_http(client, url)
+        if size is not None:
+            _set_size(job_id, size)
         if size is not None and size > MAX_DOWNLOAD_BYTES:
             raise ValueError("Configured maximum download size exceeded.")
 
@@ -350,7 +479,7 @@ async def _download_http_single(
     if temp.is_file():
         existing = temp.stat().st_size
         if known_size and existing >= known_size:
-            _set_progress(job_id, 99)
+            _set_progress(job_id, 99, size_bytes=known_size, bytes_done=existing)
             return
         if existing > 0:
             headers["Range"] = f"bytes={existing}-"
@@ -374,6 +503,8 @@ async def _download_http_single(
             if cl and cl.isdigit():
                 # If resumed, content-length is remaining bytes
                 known_size = int(cl) + existing
+            if known_size is not None:
+                _set_size(job_id, known_size)
 
         total = existing
         with temp.open(mode) as output:
@@ -384,9 +515,18 @@ async def _download_http_single(
                     raise ValueError("Configured maximum download size exceeded.")
                 output.write(chunk)
                 if known_size and known_size > 0:
-                    _set_progress(job_id, total * 100 // known_size)
+                    _set_progress(
+                        job_id,
+                        total * 100 // known_size,
+                        size_bytes=known_size,
+                        bytes_done=total,
+                    )
                 else:
-                    _set_progress(job_id, min(99, total * 100 // MAX_DOWNLOAD_BYTES))
+                    _set_progress(
+                        job_id,
+                        min(99, total * 100 // MAX_DOWNLOAD_BYTES),
+                        bytes_done=total,
+                    )
 
 
 async def _download_http_multi(
@@ -411,11 +551,17 @@ async def _download_http_multi(
     segment_paths = [STAGING_DIR / f"{job_id}.part.{i}" for i in range(n)]
     done_bytes = [0] * n
     lock = asyncio.Lock()
+    _set_size(job_id, size)
 
     async def report() -> None:
         total = sum(done_bytes)
         if size > 0:
-            _set_progress(job_id, total * 100 // size)
+            _set_progress(
+                job_id,
+                total * 100 // size,
+                size_bytes=size,
+                bytes_done=total,
+            )
 
     async def fetch_part(idx: int, start_b: int, end_b: int, seg: Path) -> None:
         expected = end_b - start_b + 1
@@ -472,7 +618,7 @@ async def _download_http_multi(
         raise ValueError(
             f"Assembled file incomplete: got {temp.stat().st_size}, expected {size}"
         )
-    _set_progress(job_id, 99)
+    _set_progress(job_id, 99, size_bytes=size, bytes_done=size)
     return []
 
 
@@ -486,6 +632,7 @@ async def _download_drive(
     """Authorized Drive API download. Returns the final target path."""
     file_id = (drive_file_id or "").strip() or None
     dest_name = _safe_filename(title, job_id)
+    known_size: int | None = None
 
     if not file_id:
         ref = gdrive.parse_drive_url(url)
@@ -498,9 +645,32 @@ async def _download_drive(
         file_id = meta.id
         if meta.name:
             dest_name = _safe_filename(meta.name, job_id)
+        if getattr(meta, "size", None):
+            known_size = int(meta.size)
+
+    if known_size is None:
+        try:
+            meta = gdrive.get_item_metadata(file_id)
+            if getattr(meta, "size", None):
+                known_size = int(meta.size)
+            if meta.name and not drive_file_id:
+                dest_name = _safe_filename(meta.name, job_id)
+        except Exception:
+            pass
+
+    if known_size is not None:
+        _set_size(job_id, known_size)
 
     def progress_cb(pct: int):
-        _set_progress(job_id, pct)
+        done = None
+        if known_size is not None and pct is not None:
+            done = int(known_size * max(0, min(100, pct)) / 100)
+        _set_progress(
+            job_id,
+            pct,
+            size_bytes=known_size,
+            bytes_done=done,
+        )
 
     await asyncio.to_thread(gdrive.download_file_to_path, file_id, temp, progress_cb)
     target = DOWNLOAD_DIR / dest_name
