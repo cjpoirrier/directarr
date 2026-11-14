@@ -8,6 +8,10 @@ services:
     environment:
       TZ: America/Chicago
       DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:-change-this-long-random-key}
+      # Web UI login (Sonarr-style). Change these after first boot.
+      DIRECTARR_AUTH_MODE: ${DIRECTARR_AUTH_MODE:-forms}
+      DIRECTARR_AUTH_USERNAME: ${DIRECTARR_AUTH_USERNAME:-admin}
+      DIRECTARR_AUTH_PASSWORD: ${DIRECTARR_AUTH_PASSWORD:-admin}
       DIRECTARR_CONFIG_DIR: /config
       DIRECTARR_DOWNLOAD_DIR: /downloads
       DIRECTARR_STAGING_DIR: /staging

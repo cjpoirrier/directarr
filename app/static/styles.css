@@ -213,3 +213,35 @@ td.actions { white-space: nowrap; }
   height: 100%;
   background: var(--accent, #3b82f6);
 }
+
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #0b1018;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+.login-screen.hidden { display: none; }
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  background: #121826;
+  border: 1px solid #2a3548;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+.login-card h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+.login-card label { display: block; margin-top: 0.75rem; font-size: 0.9rem; color: #9aa4b2; }
+.login-card input {
+  width: 100%;
+  margin-top: 0.35rem;
+  background: #0b1018;
+  border: 1px solid #2a3548;
+  color: #e7ecf3;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+}
+body.login-locked .app { visibility: hidden; }

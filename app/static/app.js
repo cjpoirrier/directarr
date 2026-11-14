@@ -31,8 +31,16 @@
     const text = await res.text();
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
     if (!res.ok) {
-      const detail = (data && data.detail) || res.statusText || "Request failed";
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      if (res.status === 401 && path.indexOf("/api/v1/auth/") !== 0) {
+        showLogin();
+      }
+      const text = await res.text();
+      let msg = text;
+      try {
+        const j = JSON.parse(text);
+        msg = j.detail || j.message || text;
+      } catch {}
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
     return data;
   }
@@ -52,6 +60,33 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function showLogin() {
+    document.body.classList.add("login-locked");
+    const screen = $("#login-screen");
+    if (screen) screen.classList.remove("hidden");
+  }
+
+  function hideLogin() {
+    document.body.classList.remove("login-locked");
+    const screen = $("#login-screen");
+    if (screen) screen.classList.add("hidden");
+  }
+
+  async function ensureAuth() {
+    try {
+      const st = await fetch("/api/v1/auth/status", { credentials: "same-origin" }).then((r) => r.json());
+      if (st.authenticated) {
+        hideLogin();
+        return true;
+      }
+      showLogin();
+      return false;
+    } catch {
+      showLogin();
+      return false;
+    }
   }
 
   function setView(name) {
@@ -74,7 +109,43 @@
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
-    manageDownloadPolling();
+    
+  const loginForm = $("#login-form");
+  if (loginForm) {
+    loginForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const err = $("#login-error");
+      if (err) err.textContent = "";
+      try {
+        const res = await fetch("/api/v1/auth/login", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: ($("#login-user") && $("#login-user").value.trim()) || "",
+            password: ($("#login-pass") && $("#login-pass").value) || "",
+          }),
+        });
+        if (!res.ok) {
+          const t = await res.text();
+          let msg = "Login failed";
+          try { msg = JSON.parse(t).detail || msg; } catch {}
+          if (err) err.textContent = typeof msg === "string" ? msg : "Login failed";
+          return;
+        }
+        hideLogin();
+        if ($("#login-pass")) $("#login-pass").value = "";
+        loadDashboard();
+        manageDownloadPolling();
+      } catch (e) {
+        if (err) err.textContent = e.message || "Login failed";
+      }
+    });
+  }
+
+  ensureAuth().then((ok) => {
+    if (ok) manageDownloadPolling();
+  });
   }
 
   function downloadsAreActive(rows) {

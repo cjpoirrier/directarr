@@ -72,3 +72,13 @@ GDRIVE_SCOPES = [
     ).split(",")
     if s.strip()
 ]
+
+
+# Web UI login (Sonarr-style). API key remains for Torznab / external tools only.
+AUTH_USERNAME = os.getenv("DIRECTARR_AUTH_USERNAME", "admin")
+AUTH_PASSWORD = os.getenv("DIRECTARR_AUTH_PASSWORD", "admin")
+AUTH_PASSWORD_HASH_FILE = CONFIG_DIR / "auth_password_hash.txt"
+SESSION_SECRET_FILE = CONFIG_DIR / "session_secret.txt"
+# "forms" = require login for UI+API (except health/torznab with apikey)
+# "none" = open (local network); still accept API key for external tools
+AUTH_MODE = os.getenv("DIRECTARR_AUTH_MODE", "forms").strip().lower()
