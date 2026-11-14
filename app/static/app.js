@@ -123,8 +123,10 @@
       search: "Search",
       releases: "Releases",
       downloads: "Downloads",
+      history: "History",
       stats: "Stats",
       sources: "Indexers",
+      applications: "Applications",
       gdrive: "Google Drive",
       settings: "Settings",
       system: "System",
@@ -133,10 +135,15 @@
     if (name === "dashboard") loadDashboard({ silent: false });
     if (name === "releases") loadReleases();
     if (name === "downloads") loadDownloads({ silent: false });
+    if (name === "history") loadHistory();
     if (name === "stats") loadStats();
     if (name === "sources") loadSources();
+    if (name === "applications") loadApplications();
     if (name === "gdrive") loadGdrive();
-    if (name === "settings") updateSettings();
+    if (name === "settings") {
+      updateSettings();
+      loadSyncProfiles();
+    }
     if (name === "system") loadSystemStatus();
     // Restart (or stop) the download poller for the new view
     manageDownloadPolling();
@@ -1058,21 +1065,209 @@
       if (urlEl) {
         urlEl.textContent = `${host}${data.torznab_path || "/api"}?apikey=${key || "YOUR_KEY"}`;
       }
+      const setVal = (sel, val) => {
+        const el = $(sel);
+        if (el) el.value = val ?? "";
+      };
+      setVal("#settings-bind", data.bind_address || "0.0.0.0");
+      setVal("#settings-port", data.port != null ? data.port : location.port || 8787);
+      setVal("#settings-url-base", data.url_base || "");
+      setVal("#settings-allowed-hosts", data.allowed_hosts || "");
+      setVal("#settings-auth-user", data.auth_username || "admin");
       const authMode = $("#settings-auth-mode");
-      if (authMode) authMode.textContent = data.auth_mode || "forms";
+      if (authMode) authMode.value = (data.auth_mode || "forms").toLowerCase() === "none" ? "none" : "forms";
       const authRequired = $("#settings-auth-required");
       if (authRequired) {
-        const mode = (data.auth_mode || "forms").toLowerCase();
-        authRequired.textContent = mode === "none" ? "Disabled" : "Enabled";
+        authRequired.checked = (data.auth_mode || "forms").toLowerCase() !== "none";
       }
-      const authUser = $("#settings-auth-user");
-      if (authUser) authUser.textContent = data.auth_username || "admin";
-      const listen = $("#settings-listen");
-      if (listen) listen.textContent = `${location.hostname || "0.0.0.0"}:${location.port || "8787"}`;
+      const np = $("#settings-new-password");
+      if (np) np.value = "";
+      const cp = $("#settings-current-password");
+      if (cp) cp.value = "";
       if (key) localStorage.setItem(KEY, key);
     } catch (e) {
       toast(e.message, true);
     }
+  }
+
+  async function saveGeneralSettings(ev) {
+    if (ev) ev.preventDefault();
+    const body = {
+      bind_address: ($("#settings-bind") && $("#settings-bind").value.trim()) || "0.0.0.0",
+      port: Number(($("#settings-port") && $("#settings-port").value) || 8787),
+      url_base: ($("#settings-url-base") && $("#settings-url-base").value.trim()) || "",
+      allowed_hosts: ($("#settings-allowed-hosts") && $("#settings-allowed-hosts").value.trim()) || "",
+      auth_mode: ($("#settings-auth-mode") && $("#settings-auth-mode").value) || "forms",
+      auth_username: ($("#settings-auth-user") && $("#settings-auth-user").value.trim()) || "admin",
+    };
+    const newPw = $("#settings-new-password") && $("#settings-new-password").value;
+    const curPw = $("#settings-current-password") && $("#settings-current-password").value;
+    if (newPw) {
+      body.new_password = newPw;
+      body.current_password = curPw || "";
+    }
+    try {
+      await api("/api/v1/settings/general", { method: "PUT", body });
+      toast("Settings saved");
+      await updateSettings();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  async function loadApplications() {
+    try {
+      const data = await api("/api/v1/applications");
+      const items = data.items || [];
+      const el = $("#applications-table");
+      if (!el) return;
+      if (!items.length) {
+        el.innerHTML = `<div class="empty-state"><p class="muted">No applications linked yet. Add Sonarr or Radarr to sync indexers.</p></div>`;
+        return;
+      }
+      el.innerHTML =
+        `<table><thead><tr>
+          <th>Name</th><th>Type</th><th>URL</th><th>Sync</th><th>Status</th><th></th>
+        </tr></thead><tbody>` +
+        items
+          .map((a) => {
+            const en = a.enabled ? '<span class="pill ok">On</span>' : '<span class="pill muted">Off</span>';
+            const st = a.last_sync_status
+              ? a.last_sync_status.startsWith("ok") || a.last_sync_status === "ok"
+                ? `<span class="pill ok">${esc(a.last_sync_status)}</span>`
+                : `<span class="pill err">${esc(a.last_sync_status)}</span>`
+              : '<span class="pill muted">—</span>';
+            return `<tr data-id="${esc(a.id)}">
+              <td><strong>${esc(a.name)}</strong> ${en}</td>
+              <td><span class="proto-pill">${esc(a.app_type)}</span></td>
+              <td class="muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(a.base_url)}</td>
+              <td class="muted">${esc(a.sync_level || "fullSync")}</td>
+              <td>${st}</td>
+              <td class="row" style="gap:0.35rem">
+                <button type="button" class="btn sm" data-app-test="${esc(a.id)}">Test</button>
+                <button type="button" class="btn sm" data-app-edit="${esc(a.id)}">Edit</button>
+                <button type="button" class="btn sm danger" data-app-del="${esc(a.id)}">Delete</button>
+              </td>
+            </tr>`;
+          })
+          .join("") +
+        `</tbody></table>`;
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  async function loadSyncProfiles() {
+    try {
+      const data = await api("/api/v1/sync-profiles");
+      const items = data.items || [];
+      const el = $("#sync-profiles-table");
+      if (el) {
+        if (!items.length) {
+          el.innerHTML = `<p class="muted">No profiles.</p>`;
+        } else {
+          el.innerHTML =
+            `<table><thead><tr><th>Name</th><th>RSS</th><th>Auto</th><th>Interactive</th><th>Seeders</th><th></th></tr></thead><tbody>` +
+            items
+              .map(
+                (p) => `<tr>
+                <td>${esc(p.name)}</td>
+                <td>${p.enable_rss ? "✓" : "—"}</td>
+                <td>${p.enable_automatic_search ? "✓" : "—"}</td>
+                <td>${p.enable_interactive_search ? "✓" : "—"}</td>
+                <td>${p.minimum_seeders ?? 1}</td>
+                <td class="row" style="gap:0.35rem">
+                  <button type="button" class="btn sm" data-profile-edit="${esc(p.id)}">Edit</button>
+                  ${
+                    p.id === "default"
+                      ? ""
+                      : `<button type="button" class="btn sm danger" data-profile-del="${esc(p.id)}">Delete</button>`
+                  }
+                </td>
+              </tr>`
+              )
+              .join("") +
+            `</tbody></table>`;
+        }
+      }
+      const sel = $("#app-sync-profile");
+      if (sel) {
+        const cur = sel.value;
+        sel.innerHTML = items
+          .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`)
+          .join("");
+        if (cur) sel.value = cur;
+      }
+      return items;
+    } catch (e) {
+      toast(e.message, true);
+      return [];
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const filter = ($("#history-filter") && $("#history-filter").value) || "";
+      const q = filter ? `?event_type=${encodeURIComponent(filter)}&limit=150` : "?limit=150";
+      const data = await api("/api/v1/history" + q);
+      const items = data.items || [];
+      const el = $("#history-table");
+      if (!el) return;
+      if (!items.length) {
+        el.innerHTML = `<div class="empty-state"><p class="muted">No history events yet.</p></div>`;
+        return;
+      }
+      el.innerHTML =
+        `<table><thead><tr><th>When</th><th>Type</th><th>Message</th><th>Details</th></tr></thead><tbody>` +
+        items
+          .map(
+            (h) => `<tr>
+            <td class="muted" style="white-space:nowrap">${esc(h.created_at || "")}</td>
+            <td><span class="pill muted">${esc(h.event_type)}</span></td>
+            <td>${esc(h.message)}</td>
+            <td class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">${esc(h.details || "")}</td>
+          </tr>`
+          )
+          .join("") +
+        `</tbody></table>`;
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function openApplicationModal(app) {
+    $("#app-edit-id").value = app ? app.id : "";
+    $("#application-modal-title").textContent = app ? "Edit Application" : "Add Application";
+    $("#app-type").value = (app && app.app_type) || "sonarr";
+    $("#app-name").value = (app && app.name) || "";
+    $("#app-base-url").value = (app && app.base_url) || "";
+    $("#app-api-key").value = (app && app.api_key) || "";
+    $("#app-sync-level").value = (app && app.sync_level) || "fullSync";
+    $("#app-enabled").checked = !app || !!app.enabled;
+    $("#app-tags").value = (app && app.tags) || "";
+    loadSyncProfiles().then(() => {
+      if (app && app.sync_profile_id) $("#app-sync-profile").value = app.sync_profile_id;
+    });
+    $("#application-modal").classList.remove("hidden");
+  }
+
+  function closeApplicationModal() {
+    $("#application-modal").classList.add("hidden");
+  }
+
+  function openSyncProfileModal(profile) {
+    $("#profile-edit-id").value = profile ? profile.id : "";
+    $("#sync-profile-modal-title").textContent = profile ? "Edit Sync Profile" : "Add Sync Profile";
+    $("#profile-name").value = (profile && profile.name) || "";
+    $("#profile-rss").checked = !profile || !!profile.enable_rss;
+    $("#profile-auto").checked = !profile || !!profile.enable_automatic_search;
+    $("#profile-interactive").checked = !profile || !!profile.enable_interactive_search;
+    $("#profile-seeders").value = profile && profile.minimum_seeders != null ? profile.minimum_seeders : 1;
+    $("#sync-profile-modal").classList.remove("hidden");
+  }
+
+  function closeSyncProfileModal() {
+    $("#sync-profile-modal").classList.add("hidden");
   }
 
   async function loadStats() {
@@ -1181,6 +1376,179 @@
     refreshStatsBtn.addEventListener("click", () => {
       loadStats();
       toast("Stats refreshed");
+    });
+  }
+
+  // General settings form
+  const generalForm = $("#general-settings-form");
+  if (generalForm) {
+    generalForm.addEventListener("submit", saveGeneralSettings);
+  }
+  const authModeSel = $("#settings-auth-mode");
+  const authReqChk = $("#settings-auth-required");
+  if (authModeSel && authReqChk) {
+    authModeSel.addEventListener("change", () => {
+      authReqChk.checked = authModeSel.value !== "none";
+    });
+    authReqChk.addEventListener("change", () => {
+      authModeSel.value = authReqChk.checked ? "forms" : "none";
+    });
+  }
+
+  // Applications
+  const addAppBtn = $("#add-application-btn");
+  if (addAppBtn) addAppBtn.addEventListener("click", () => openApplicationModal(null));
+  ["#application-modal-close", "#application-modal-cancel"].forEach((sel) => {
+    const b = $(sel);
+    if (b) b.addEventListener("click", closeApplicationModal);
+  });
+  const appSave = $("#application-modal-save");
+  if (appSave) {
+    appSave.addEventListener("click", async () => {
+      const id = ($("#app-edit-id") && $("#app-edit-id").value) || "";
+      const body = {
+        app_type: $("#app-type").value,
+        name: $("#app-name").value.trim() || $("#app-type").value,
+        base_url: $("#app-base-url").value.trim(),
+        api_key: $("#app-api-key").value.trim(),
+        sync_level: $("#app-sync-level").value,
+        sync_profile_id: ($("#app-sync-profile") && $("#app-sync-profile").value) || "default",
+        enabled: $("#app-enabled").checked,
+        tags: ($("#app-tags") && $("#app-tags").value.trim()) || "",
+      };
+      try {
+        if (id) await api(`/api/v1/applications/${encodeURIComponent(id)}`, { method: "PUT", body });
+        else await api("/api/v1/applications", { method: "POST", body });
+        toast(id ? "Application updated" : "Application added");
+        closeApplicationModal();
+        loadApplications();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  }
+  const appTestBtn = $("#app-test-btn");
+  if (appTestBtn) {
+    appTestBtn.addEventListener("click", async () => {
+      const id = ($("#app-edit-id") && $("#app-edit-id").value) || "";
+      const body = {
+        app_type: $("#app-type").value,
+        name: $("#app-name").value.trim() || $("#app-type").value,
+        base_url: $("#app-base-url").value.trim(),
+        api_key: $("#app-api-key").value.trim(),
+      };
+      try {
+        const res = id
+          ? await api(`/api/v1/applications/${encodeURIComponent(id)}/test`, { method: "POST" })
+          : await api("/api/v1/applications/test", { method: "POST", body });
+        toast(res.ok ? `Connected: ${res.message || "ok"}` : `Failed: ${res.message || res.status_code}`, !res.ok);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  }
+  document.addEventListener("click", async (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement)) return;
+    const testId = t.getAttribute("data-app-test");
+    const editId = t.getAttribute("data-app-edit");
+    const delId = t.getAttribute("data-app-del");
+    if (testId) {
+      try {
+        const res = await api(`/api/v1/applications/${encodeURIComponent(testId)}/test`, { method: "POST" });
+        toast(res.ok ? `Connected: ${res.message || "ok"}` : `Failed: ${res.message || res.status_code}`, !res.ok);
+        loadApplications();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    if (editId) {
+      try {
+        const app = await api(`/api/v1/applications/${encodeURIComponent(editId)}`);
+        openApplicationModal(app);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    if (delId) {
+      if (!confirm("Delete this application?")) return;
+      try {
+        await api(`/api/v1/applications/${encodeURIComponent(delId)}`, { method: "DELETE" });
+        toast("Application removed");
+        loadApplications();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    const pe = t.getAttribute("data-profile-edit");
+    const pd = t.getAttribute("data-profile-del");
+    if (pe) {
+      try {
+        const data = await api("/api/v1/sync-profiles");
+        const profile = (data.items || []).find((p) => p.id === pe);
+        if (profile) openSyncProfileModal(profile);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    if (pd) {
+      if (!confirm("Delete this sync profile?")) return;
+      try {
+        await api(`/api/v1/sync-profiles/${encodeURIComponent(pd)}`, { method: "DELETE" });
+        toast("Profile deleted");
+        loadSyncProfiles();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+  });
+
+  // Sync profiles
+  const addProfileBtn = $("#add-sync-profile-btn");
+  if (addProfileBtn) addProfileBtn.addEventListener("click", () => openSyncProfileModal(null));
+  ["#sync-profile-modal-close", "#sync-profile-modal-cancel"].forEach((sel) => {
+    const b = $(sel);
+    if (b) b.addEventListener("click", closeSyncProfileModal);
+  });
+  const profileSave = $("#sync-profile-modal-save");
+  if (profileSave) {
+    profileSave.addEventListener("click", async () => {
+      const id = ($("#profile-edit-id") && $("#profile-edit-id").value) || "";
+      const body = {
+        name: $("#profile-name").value.trim(),
+        enable_rss: $("#profile-rss").checked,
+        enable_automatic_search: $("#profile-auto").checked,
+        enable_interactive_search: $("#profile-interactive").checked,
+        minimum_seeders: Number($("#profile-seeders").value || 1),
+      };
+      try {
+        if (id) await api(`/api/v1/sync-profiles/${encodeURIComponent(id)}`, { method: "PUT", body });
+        else await api("/api/v1/sync-profiles", { method: "POST", body });
+        toast("Sync profile saved");
+        closeSyncProfileModal();
+        loadSyncProfiles();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  }
+
+  // History
+  const refreshHistoryBtn = $("#refresh-history");
+  if (refreshHistoryBtn) refreshHistoryBtn.addEventListener("click", () => loadHistory());
+  const historyFilter = $("#history-filter");
+  if (historyFilter) historyFilter.addEventListener("change", () => loadHistory());
+  const clearHistoryBtn = $("#clear-history");
+  if (clearHistoryBtn) {
+    clearHistoryBtn.addEventListener("click", async () => {
+      if (!confirm("Clear all history?")) return;
+      try {
+        await api("/api/v1/history", { method: "DELETE" });
+        toast("History cleared");
+        loadHistory();
+      } catch (e) {
+        toast(e.message, true);
+      }
     });
   }
 

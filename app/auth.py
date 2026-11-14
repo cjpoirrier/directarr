@@ -86,12 +86,22 @@ def set_password(new_password: str) -> None:
 
 
 def auth_mode() -> str:
-    mode = (config.AUTH_MODE or "forms").lower()
-    return mode if mode in {"forms", "none"} else "forms"
+    try:
+        from .settings_store import effective_auth_mode
+
+        return effective_auth_mode()
+    except Exception:
+        mode = (config.AUTH_MODE or "forms").lower()
+        return mode if mode in {"forms", "none"} else "forms"
 
 
 def username() -> str:
-    return config.AUTH_USERNAME or "admin"
+    try:
+        from .settings_store import effective_username
+
+        return effective_username()
+    except Exception:
+        return config.AUTH_USERNAME or "admin"
 
 
 def create_session_token(user: str) -> str:

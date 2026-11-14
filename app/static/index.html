@@ -41,8 +41,10 @@
         <button class="nav-btn" data-view="search">Search</button>
         <button class="nav-btn" data-view="releases">Releases</button>
         <button class="nav-btn" data-view="downloads">Downloads</button>
+        <button class="nav-btn" data-view="history">History</button>
         <button class="nav-btn" data-view="stats">Stats</button>
         <button class="nav-btn" data-view="sources">Indexers</button>
+        <button class="nav-btn" data-view="applications">Applications</button>
         <button class="nav-btn" data-view="gdrive">Google Drive</button>
         <button class="nav-btn" data-view="settings">Settings</button>
         <button class="nav-btn" data-view="system">System</button>
@@ -179,72 +181,103 @@
             <button type="button" class="settings-tab" data-settings-tab="ui">UI</button>
             <button type="button" class="settings-tab" data-settings-tab="notifications">Notifications</button>
             <button type="button" class="settings-tab" data-settings-tab="tags">Tags</button>
+            <button type="button" class="settings-tab" data-settings-tab="profiles">Sync Profiles</button>
           </aside>
           <div class="settings-panels">
-            <!-- General (Host + Security) -->
+            <!-- General (Host + Security) — editable -->
             <div class="settings-panel active" id="settings-panel-general">
-              <div class="panel">
-                <h2>Host</h2>
-                <div class="settings-grid">
-                  <div class="settings-label">Port Number</div>
-                  <div class="settings-field">
-                    <code id="settings-listen">0.0.0.0:8787</code>
-                    <p class="hint">Configured via Docker / uvicorn. Restart the container to change port.</p>
+              <form id="general-settings-form">
+                <div class="panel">
+                  <div class="row between">
+                    <h2>Host</h2>
+                    <button type="submit" class="btn primary" id="save-general-settings">Save Changes</button>
                   </div>
-                  <div class="settings-label">URL Base</div>
-                  <div class="settings-field">
-                    <code id="settings-url-base">/</code>
-                    <p class="hint">Path prefix when behind a reverse proxy (not configurable in UI yet).</p>
-                  </div>
-                </div>
-              </div>
-              <div class="panel">
-                <h2>Security</h2>
-                <div class="settings-grid">
-                  <div class="settings-label">Authentication</div>
-                  <div class="settings-field">
-                    <code id="settings-auth-mode">forms</code>
-                    <p class="hint">Set <code>DIRECTARR_AUTH_MODE</code> to <code>forms</code> or <code>none</code>. Username via <code>DIRECTARR_AUTH_USERNAME</code>.</p>
-                  </div>
-                  <div class="settings-label">Authentication Required</div>
-                  <div class="settings-field">
-                    <code id="settings-auth-required">Enabled</code>
-                    <p class="hint">When auth mode is forms, the web UI requires login. Local network bypass is not implemented yet.</p>
-                  </div>
-                  <div class="settings-label">Username</div>
-                  <div class="settings-field">
-                    <code id="settings-auth-user">admin</code>
-                  </div>
-                  <div class="settings-label">API Key</div>
-                  <div class="settings-field">
-                    <div class="api-key-row">
-                      <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
-                      <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
-                      <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+                  <div class="settings-grid">
+                    <div class="settings-label">Bind Address</div>
+                    <div class="settings-field">
+                      <input id="settings-bind" type="text" placeholder="0.0.0.0" autocomplete="off" />
+                      <p class="hint">Stored preference. Actual listen address is set by Docker / uvicorn; restart to apply a new bind.</p>
                     </div>
-                    <p class="hint">Used by Sonarr/Radarr as the Torznab API key. Regenerating invalidates the old key immediately. Requires restart only if the key is also set via environment.</p>
-                  </div>
-                  <div class="settings-label">Certificate Validation</div>
-                  <div class="settings-field">
-                    <code>Enabled</code>
-                    <p class="hint">HTTPS certificate validation for outbound requests. Do not disable unless you understand the risks.</p>
-                  </div>
-                </div>
-              </div>
-              <div class="panel">
-                <h2>Indexers (Torznab)</h2>
-                <div class="settings-grid">
-                  <div class="settings-label">Torznab URL</div>
-                  <div class="settings-field">
-                    <div class="api-key-row">
-                      <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
-                      <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
-                      <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+                    <div class="settings-label">Port Number</div>
+                    <div class="settings-field">
+                      <input id="settings-port" type="number" min="1" max="65535" placeholder="8787" />
+                      <p class="hint">Requires container/process restart to take effect.</p>
                     </div>
-                    <p class="hint">In Sonarr: Settings → Indexers → Add → Torznab. Paste this URL and the API key above.</p>
+                    <div class="settings-label">URL Base</div>
+                    <div class="settings-field">
+                      <input id="settings-url-base" type="text" placeholder="/" autocomplete="off" />
+                      <p class="hint">Path prefix when behind a reverse proxy (e.g. <code>/directarr</code>). Empty = root.</p>
+                    </div>
+                    <div class="settings-label">Allowed Hosts</div>
+                    <div class="settings-field">
+                      <input id="settings-allowed-hosts" type="text" placeholder="example.com, media.lan" autocomplete="off" />
+                      <p class="hint">Comma-separated hostnames for outbound download allow-lists (optional).</p>
+                    </div>
                   </div>
                 </div>
-              </div>
+                <div class="panel">
+                  <h2>Security</h2>
+                  <div class="settings-grid">
+                    <div class="settings-label">Authentication</div>
+                    <div class="settings-field">
+                      <select id="settings-auth-mode">
+                        <option value="forms">Forms (login required)</option>
+                        <option value="none">None (open UI)</option>
+                      </select>
+                      <p class="hint">Forms requires username/password for the web UI. API key still works for Torznab clients either way.</p>
+                    </div>
+                    <div class="settings-label">Authentication Required</div>
+                    <div class="settings-field">
+                      <label class="switch">
+                        <input type="checkbox" id="settings-auth-required" checked />
+                        <span class="slider"></span>
+                      </label>
+                      <p class="hint">Toggle mirrors Authentication mode (on = forms, off = none).</p>
+                    </div>
+                    <div class="settings-label">Username</div>
+                    <div class="settings-field">
+                      <input id="settings-auth-user" type="text" autocomplete="username" />
+                    </div>
+                    <div class="settings-label">Password</div>
+                    <div class="settings-field">
+                      <input id="settings-new-password" type="password" placeholder="Leave blank to keep current" autocomplete="new-password" />
+                      <p class="hint">To change password, enter a new one below and your current password for confirmation.</p>
+                    </div>
+                    <div class="settings-label">Current Password</div>
+                    <div class="settings-field">
+                      <input id="settings-current-password" type="password" placeholder="Required only when changing password" autocomplete="current-password" />
+                    </div>
+                    <div class="settings-label">API Key</div>
+                    <div class="settings-field">
+                      <div class="api-key-row">
+                        <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
+                        <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
+                        <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+                      </div>
+                      <p class="hint">Used by Sonarr/Radarr as the Torznab API key. Regenerating invalidates the old key immediately.</p>
+                    </div>
+                    <div class="settings-label">Certificate Validation</div>
+                    <div class="settings-field">
+                      <code>Enabled</code>
+                      <p class="hint">HTTPS certificate validation for outbound requests. Do not disable unless you understand the risks.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
+                  <h2>API / Torznab</h2>
+                  <div class="settings-grid">
+                    <div class="settings-label">Torznab URL</div>
+                    <div class="settings-field">
+                      <div class="api-key-row">
+                        <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
+                        <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
+                        <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+                      </div>
+                      <p class="hint">In Sonarr/Radarr: Settings → Indexers → Add → Torznab. Paste this URL and the API key above. Or use <strong>Applications</strong> to register the *arr instance here.</p>
+                    </div>
+                  </div>
+                </div>
+              </form>
             </div>
 
             <!-- UI -->
@@ -311,7 +344,53 @@
                 </div>
               </div>
             </div>
+
+            <!-- Sync Profiles -->
+            <div class="settings-panel" id="settings-panel-profiles">
+              <div class="panel">
+                <div class="row between">
+                  <h2>Sync Profiles</h2>
+                  <button type="button" class="btn primary" id="add-sync-profile-btn">+ Add</button>
+                </div>
+                <p class="hint">Profiles control what gets synced when an Application (Sonarr/Radarr) is linked — RSS, automatic search, interactive search.</p>
+                <div id="sync-profiles-table" class="table-wrap"></div>
+              </div>
+            </div>
           </div>
+        </div>
+      </section>
+
+      <section id="view-applications" class="view">
+        <div class="panel">
+          <div class="row between">
+            <div>
+              <h2>Applications</h2>
+              <p class="hint" style="margin:0.25rem 0 0">Link Sonarr, Radarr, and other *arr apps so Directarr can push indexer settings (Prowlarr-style).</p>
+            </div>
+            <button type="button" class="btn primary" id="add-application-btn">+ Add</button>
+          </div>
+          <div id="applications-table" class="table-wrap" style="margin-top:1rem"></div>
+        </div>
+      </section>
+
+      <section id="view-history" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>History</h2>
+            <div class="row">
+              <select id="history-filter">
+                <option value="">All events</option>
+                <option value="download">Downloads</option>
+                <option value="application">Applications</option>
+                <option value="settings">Settings</option>
+                <option value="sync_profile">Sync profiles</option>
+                <option value="system">System</option>
+              </select>
+              <button type="button" class="btn" id="refresh-history">Refresh</button>
+              <button type="button" class="btn danger" id="clear-history">Clear</button>
+            </div>
+          </div>
+          <div id="history-table" class="table-wrap" style="margin-top:0.75rem"></div>
         </div>
       </section>
 
@@ -421,6 +500,107 @@
         <button type="button" class="btn sm primary" id="queue-modal-download-all">Download all</button>
       </div>
       <div id="queue-modal-list" class="table-wrap"></div>
+    </div>
+  </div>
+
+  <div id="application-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="row between">
+        <h2 id="application-modal-title">Add Application</h2>
+        <button type="button" class="btn sm" id="application-modal-close">✕</button>
+      </div>
+      <form id="application-form" class="settings-grid" style="margin-top:1rem">
+        <input type="hidden" id="app-edit-id" value="" />
+        <div class="settings-label">Type</div>
+        <div class="settings-field">
+          <select id="app-type" required>
+            <option value="sonarr">Sonarr</option>
+            <option value="radarr">Radarr</option>
+            <option value="lidarr">Lidarr</option>
+            <option value="readarr">Readarr</option>
+            <option value="whisparr">Whisparr</option>
+          </select>
+        </div>
+        <div class="settings-label">Name</div>
+        <div class="settings-field">
+          <input id="app-name" type="text" placeholder="Sonarr" required />
+        </div>
+        <div class="settings-label">URL</div>
+        <div class="settings-field">
+          <input id="app-base-url" type="url" placeholder="http://sonarr:8989" required />
+          <p class="hint">Base URL of the *arr instance (no trailing path).</p>
+        </div>
+        <div class="settings-label">API Key</div>
+        <div class="settings-field">
+          <input id="app-api-key" type="text" placeholder="From *arr Settings → General → Security" autocomplete="off" />
+        </div>
+        <div class="settings-label">Sync Level</div>
+        <div class="settings-field">
+          <select id="app-sync-level">
+            <option value="fullSync">Full Sync</option>
+            <option value="addOnly">Add and Remove Only</option>
+          </select>
+        </div>
+        <div class="settings-label">Sync Profile</div>
+        <div class="settings-field">
+          <select id="app-sync-profile"></select>
+        </div>
+        <div class="settings-label">Enabled</div>
+        <div class="settings-field">
+          <label class="switch">
+            <input type="checkbox" id="app-enabled" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-label">Tags</div>
+        <div class="settings-field">
+          <input id="app-tags" type="text" placeholder="optional, comma-separated" />
+        </div>
+      </form>
+      <div class="row between" style="margin-top:1.25rem">
+        <button type="button" class="btn" id="app-test-btn">Test</button>
+        <div class="row">
+          <button type="button" class="btn" id="application-modal-cancel">Cancel</button>
+          <button type="button" class="btn primary" id="application-modal-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sync-profile-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="row between">
+        <h2 id="sync-profile-modal-title">Sync Profile</h2>
+        <button type="button" class="btn sm" id="sync-profile-modal-close">✕</button>
+      </div>
+      <form id="sync-profile-form" class="settings-grid" style="margin-top:1rem">
+        <input type="hidden" id="profile-edit-id" value="" />
+        <div class="settings-label">Name</div>
+        <div class="settings-field">
+          <input id="profile-name" type="text" required placeholder="Standard" />
+        </div>
+        <div class="settings-label">Enable RSS</div>
+        <div class="settings-field">
+          <label class="switch"><input type="checkbox" id="profile-rss" checked /><span class="slider"></span></label>
+        </div>
+        <div class="settings-label">Automatic Search</div>
+        <div class="settings-field">
+          <label class="switch"><input type="checkbox" id="profile-auto" checked /><span class="slider"></span></label>
+        </div>
+        <div class="settings-label">Interactive Search</div>
+        <div class="settings-field">
+          <label class="switch"><input type="checkbox" id="profile-interactive" checked /><span class="slider"></span></label>
+        </div>
+        <div class="settings-label">Minimum Seeders</div>
+        <div class="settings-field">
+          <input id="profile-seeders" type="number" min="0" value="1" />
+          <p class="hint">Reserved for torrent indexers; ignored for direct downloads.</p>
+        </div>
+      </form>
+      <div class="row" style="margin-top:1.25rem;justify-content:flex-end;gap:0.5rem">
+        <button type="button" class="btn" id="sync-profile-modal-cancel">Cancel</button>
+        <button type="button" class="btn primary" id="sync-profile-modal-save">Save</button>
+      </div>
     </div>
   </div>
 

@@ -19,7 +19,8 @@ from .auth import (
     username as auth_username,
 )
 from .config import set_api_key
-from .db import connect, init_db
+from . import applications as apps_mod
+from .db import add_history, connect, init_db, list_history
 from .downloader import (
     cancel_job,
     clear_downloads,
@@ -30,6 +31,7 @@ from .downloader import (
 )
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
 from .parser import build_search_queries, enrich as enrich_title, save_release
+from .settings_store import load_settings, save_settings
 from .sources import (
     add_source,
     delete_source,
@@ -492,14 +494,50 @@ def bulk_delete_download_files(
 
 @app.get("/api/v1/settings/security")
 def settings_security(request: Request, x_api_key: str | None = Header(default=None)):
-    """Sonarr-style security settings: current API key for Torznab clients."""
+    """Sonarr-style security / general settings (host, auth, API key)."""
     require_auth(request, x_api_key)
-    return {
-        "api_key": config.API_KEY,
-        "torznab_path": "/api",
-        "auth_mode": config.AUTH_MODE,
-        "auth_username": config.AUTH_USERNAME,
-    }
+    return load_settings()
+
+
+class GeneralSettingsPatch(BaseModel):
+    bind_address: str | None = None
+    port: int | None = None
+    url_base: str | None = None
+    allowed_hosts: str | None = None
+    auth_mode: str | None = None
+    auth_required: bool | None = None
+    auth_username: str | None = None
+    current_password: str | None = None
+    new_password: str | None = None
+
+
+@app.put("/api/v1/settings/general")
+def settings_general_update(
+    body: GeneralSettingsPatch,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    """Update Host + Security fields from the General settings tab."""
+    require_auth(request, x_api_key)
+    patch = body.model_dump(exclude_unset=True)
+    # Password change is optional alongside other fields
+    new_pw = patch.pop("new_password", None)
+    cur_pw = patch.pop("current_password", None)
+    try:
+        result = save_settings(patch) if patch else load_settings()
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if new_pw is not None:
+        if not cur_pw or not check_password_login(auth_username(), cur_pw):
+            raise HTTPException(400, "Current password is incorrect")
+        try:
+            set_password(new_pw)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        add_history("settings", "Password changed")
+    if patch:
+        add_history("settings", "General settings updated", ", ".join(sorted(patch.keys())))
+    return result
 
 
 @app.get("/api/v1/stats")
@@ -584,11 +622,201 @@ def settings_regenerate_api_key(request: Request, x_api_key: str | None = Header
     import secrets
     new_key = secrets.token_hex(20)
     set_api_key(new_key)
+    add_history("settings", "API key regenerated")
     return {
         "api_key": config.API_KEY,
         "torznab_path": "/api",
         "message": "API key regenerated. Update Sonarr/Radarr indexers with the new key.",
     }
+
+
+# ── Applications (Sonarr / Radarr / …) ──────────────────────────────────────
+
+
+@app.get("/api/v1/applications/catalog")
+def applications_catalog(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    return {"items": apps_mod.catalog()}
+
+
+@app.get("/api/v1/applications")
+def applications_list(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    return {"items": apps_mod.list_applications()}
+
+
+class ApplicationBody(BaseModel):
+    name: str | None = None
+    app_type: str = "sonarr"
+    base_url: str
+    api_key: str = ""
+    sync_level: str = "fullSync"
+    sync_profile_id: str | None = "default"
+    enabled: bool = True
+    tags: str = ""
+
+
+@app.post("/api/v1/applications", status_code=201)
+def applications_create(
+    body: ApplicationBody,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    try:
+        return apps_mod.add_application(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/v1/applications/{app_id}")
+def applications_get(
+    app_id: str,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    app = apps_mod.get_application(app_id)
+    if not app:
+        raise HTTPException(404, "Application not found")
+    return app
+
+
+@app.put("/api/v1/applications/{app_id}")
+def applications_update(
+    app_id: str,
+    body: ApplicationBody,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    try:
+        return apps_mod.update_application(app_id, body.model_dump())
+    except KeyError:
+        raise HTTPException(404, "Application not found") from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.delete("/api/v1/applications/{app_id}")
+def applications_delete(
+    app_id: str,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    if not apps_mod.delete_application(app_id):
+        raise HTTPException(404, "Application not found")
+    return {"ok": True}
+
+
+@app.post("/api/v1/applications/{app_id}/test")
+async def applications_test(
+    app_id: str,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    try:
+        return await apps_mod.test_application(app_id=app_id)
+    except KeyError:
+        raise HTTPException(404, "Application not found") from None
+
+
+@app.post("/api/v1/applications/test")
+async def applications_test_body(
+    body: ApplicationBody,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    """Test connection before saving."""
+    require_auth(request, x_api_key)
+    try:
+        return await apps_mod.test_application(data=body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+# ── Sync profiles ───────────────────────────────────────────────────────────
+
+
+@app.get("/api/v1/sync-profiles")
+def sync_profiles_list(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    return {"items": apps_mod.list_sync_profiles()}
+
+
+class SyncProfileBody(BaseModel):
+    name: str
+    enable_rss: bool = True
+    enable_automatic_search: bool = True
+    enable_interactive_search: bool = True
+    minimum_seeders: int = 1
+
+
+@app.post("/api/v1/sync-profiles", status_code=201)
+def sync_profiles_create(
+    body: SyncProfileBody,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    try:
+        return apps_mod.upsert_sync_profile(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.put("/api/v1/sync-profiles/{profile_id}")
+def sync_profiles_update(
+    profile_id: str,
+    body: SyncProfileBody,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    try:
+        return apps_mod.upsert_sync_profile(body.model_dump(), profile_id=profile_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.delete("/api/v1/sync-profiles/{profile_id}")
+def sync_profiles_delete(
+    profile_id: str,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    require_auth(request, x_api_key)
+    try:
+        if not apps_mod.delete_sync_profile(profile_id):
+            raise HTTPException(404, "Profile not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True}
+
+
+# ── History ─────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/v1/history")
+def history_list(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    event_type: str | None = Query(default=None),
+):
+    require_auth(request, x_api_key)
+    return {"items": list_history(limit=limit, event_type=event_type)}
+
+
+@app.delete("/api/v1/history")
+def history_clear(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    with connect() as db:
+        db.execute("DELETE FROM history")
+    add_history("system", "History cleared")
+    return {"ok": True}
 
 
 @app.get("/api/v1/gdrive/status")
