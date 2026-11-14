@@ -47,6 +47,7 @@
       </nav>
       <div class="sidebar-foot">
         <span id="conn-status" class="pill muted">API key required</span>
+        <button type="button" class="btn sm" id="logout-btn" style="width:100%;margin-top:0.65rem">Log out</button>
       </div>
     </aside>
     <div class="nav-backdrop" id="nav-backdrop" hidden></div>
@@ -112,10 +113,17 @@
             <div class="row">
               <span id="auto-refresh-label" class="hint">Auto-refresh on</span>
               <button class="btn" id="refresh-downloads" type="button">Refresh</button>
-              <button class="btn" id="clear-finished-downloads" type="button" title="Remove completed, failed, and cancelled">Clear finished</button>
+              <button class="btn" id="clear-finished-downloads" type="button" title="Remove completed, failed, and cancelled from the list">Clear finished</button>
               <button class="btn danger" id="clear-all-downloads" type="button" title="Cancel active jobs and remove entire list">Clear all</button>
             </div>
           </div>
+          <div class="row download-bulk-actions" style="margin:0.5rem 0 0.75rem">
+            <button class="btn sm" id="dl-select-all" type="button">Select all</button>
+            <button class="btn sm" id="dl-select-none" type="button">Select none</button>
+            <button class="btn sm" id="dl-remove-selected" type="button" title="Remove selected rows from the list only">Remove selected</button>
+            <button class="btn sm danger" id="dl-delete-files" type="button" title="Delete selected files from disk (list stays)">Delete files</button>
+          </div>
+          <p class="hint">Remove selected = list only. Delete files = erase files on disk (separate action).</p>
           <div id="downloads-table" class="table-wrap"></div>
         </div>
       </section>

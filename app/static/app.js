@@ -467,6 +467,30 @@
     });
   }
 
+  function formatBytes(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v < 0) return "—";
+    if (v < 1024) return `${Math.round(v)} B`;
+    if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
+    if (v < 1073741824) return `${(v / 1048576).toFixed(1)} MiB`;
+    return `${(v / 1073741824).toFixed(2)} GiB`;
+  }
+
+  function sizeCell(r) {
+    const total = r.size_bytes != null ? Number(r.size_bytes) : null;
+    const done = r.bytes_done != null ? Number(r.bytes_done) : null;
+    const st = (r.status || "").toLowerCase();
+    if (st === "downloading" && total && total > 0 && done != null) {
+      return `${formatBytes(done)} / ${formatBytes(total)}`;
+    }
+    if (st === "downloading" && done != null && done > 0 && !total) {
+      return `${formatBytes(done)} / ?`;
+    }
+    if (total && total > 0) return formatBytes(total);
+    if (done && done > 0) return formatBytes(done);
+    return "—";
+  }
+
   function progressCell(r) {
     const pct = Math.max(0, Math.min(100, Number(r.progress) || 0));
     const active = (r.status || "").toLowerCase() === "downloading";
@@ -476,31 +500,65 @@
     return `${pct}%`;
   }
 
+  function selectedDownloadIds() {
+    return $$("#downloads-table .dl-check:checked")
+      .map((c) => c.value)
+      .filter(Boolean);
+  }
+
   function renderDownloadsTable(el, rows) {
     if (!rows.length) {
       el.innerHTML = `<p class="muted">No download jobs yet.</p>`;
       return;
     }
+    const prevSelected = new Set(selectedDownloadIds());
     el.innerHTML = `<table>
-      <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th>Error / path</th><th></th></tr></thead>
+      <thead><tr>
+        <th style="width:2rem"><input type="checkbox" id="dl-check-all" title="Select all" /></th>
+        <th>Title</th><th>Status</th><th>Size</th><th>Progress</th><th>Error / path</th><th></th>
+      </tr></thead>
       <tbody>
         ${rows
           .map((r) => {
             const st = (r.status || "").toLowerCase();
             const canCancel = st === "queued" || st === "downloading";
-            const actions = canCancel
-              ? `<button class="btn sm danger" data-cancel-id="${esc(r.id)}">Cancel</button>`
-              : `<button class="btn sm" data-remove-id="${esc(r.id)}">Remove</button>`;
+            const hasFile = !!(r.path && String(r.path).trim());
+            const actions = [];
+            if (canCancel) {
+              actions.push(
+                `<button class="btn sm danger" data-cancel-id="${esc(r.id)}">Cancel</button>`
+              );
+            } else {
+              actions.push(
+                `<button class="btn sm" data-remove-id="${esc(r.id)}">Remove</button>`
+              );
+            }
+            if (hasFile) {
+              actions.push(
+                `<button class="btn sm danger" data-delete-file-id="${esc(r.id)}" title="Delete file from disk">Delete file</button>`
+              );
+            }
+            const checked = prevSelected.has(r.id) ? "checked" : "";
             return `<tr>
+          <td><input type="checkbox" class="dl-check" value="${esc(r.id)}" ${checked} /></td>
           <td class="title">${esc(r.title)}</td>
           <td>${statusPill(r.status)}</td>
+          <td class="muted">${sizeCell(r)}</td>
           <td>${progressCell(r)}</td>
           <td class="title muted">${esc(r.error || r.path || "")}</td>
-          <td class="actions">${actions}</td>
+          <td class="actions">${actions.join(" ")}</td>
         </tr>`;
           })
           .join("")}
       </tbody></table>`;
+    const master = $("#dl-check-all");
+    if (master) {
+      master.addEventListener("change", () => {
+        $$("#downloads-table .dl-check").forEach((c) => {
+          c.checked = master.checked;
+        });
+      });
+    }
     el.querySelectorAll("[data-cancel-id]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         btn.disabled = true;
@@ -524,6 +582,29 @@
             method: "DELETE",
           });
           toast("Removed from list");
+          await loadDownloads({ silent: true });
+        } catch (e) {
+          toast(e.message, true);
+          btn.disabled = false;
+        }
+      });
+    });
+    el.querySelectorAll("[data-delete-file-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this file from disk? The list entry will stay.")) return;
+        btn.disabled = true;
+        try {
+          const res = await api("/api/v1/downloads/delete-files", {
+            method: "POST",
+            body: { ids: [btn.dataset.deleteFileId] },
+          });
+          toast(
+            res.deleted_count
+              ? "File deleted from disk"
+              : res.missing && res.missing.length
+                ? "File not found on disk"
+                : "No file deleted"
+          );
           await loadDownloads({ silent: true });
         } catch (e) {
           toast(e.message, true);
@@ -1038,6 +1119,98 @@
       }
     });
   }
+
+  const dlSelectAll = $("#dl-select-all");
+  if (dlSelectAll) {
+    dlSelectAll.addEventListener("click", () => {
+      $$("#downloads-table .dl-check").forEach((c) => {
+        c.checked = true;
+      });
+      const master = $("#dl-check-all");
+      if (master) master.checked = true;
+    });
+  }
+  const dlSelectNone = $("#dl-select-none");
+  if (dlSelectNone) {
+    dlSelectNone.addEventListener("click", () => {
+      $$("#downloads-table .dl-check").forEach((c) => {
+        c.checked = false;
+      });
+      const master = $("#dl-check-all");
+      if (master) master.checked = false;
+    });
+  }
+  const dlRemoveSelected = $("#dl-remove-selected");
+  if (dlRemoveSelected) {
+    dlRemoveSelected.addEventListener("click", async () => {
+      const ids = selectedDownloadIds();
+      if (!ids.length) return toast("Select at least one download", true);
+      if (!confirm(`Remove ${ids.length} item(s) from the list? Files on disk are kept.`)) return;
+      dlRemoveSelected.disabled = true;
+      try {
+        const res = await api("/api/v1/downloads/bulk-remove", {
+          method: "POST",
+          body: { ids },
+        });
+        toast(`Removed ${res.removed || ids.length} from list`);
+        await loadDownloads({ silent: true });
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        dlRemoveSelected.disabled = false;
+      }
+    });
+  }
+  const dlDeleteFiles = $("#dl-delete-files");
+  if (dlDeleteFiles) {
+    dlDeleteFiles.addEventListener("click", async () => {
+      const ids = selectedDownloadIds();
+      if (!ids.length) return toast("Select at least one download", true);
+      if (
+        !confirm(
+          `Delete physical files for ${ids.length} selected job(s)? This cannot be undone. List entries stay.`
+        )
+      )
+        return;
+      dlDeleteFiles.disabled = true;
+      try {
+        const res = await api("/api/v1/downloads/delete-files", {
+          method: "POST",
+          body: { ids },
+        });
+        toast(
+          `Deleted ${res.deleted_count || 0} file(s)` +
+            (res.missing && res.missing.length ? ` · ${res.missing.length} missing` : "")
+        );
+        await loadDownloads({ silent: true });
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        dlDeleteFiles.disabled = false;
+      }
+    });
+  }
+
+  const logoutBtn = $("#logout-btn");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await fetch("/api/v1/auth/logout", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+      } catch (e) {}
+      try {
+        localStorage.removeItem(KEY);
+      } catch (e) {}
+      showLogin();
+      const passEl = $("#login-pass");
+      if (passEl) passEl.value = "";
+      toast("Logged out");
+    });
+  }
+
   $("#reload-sources").addEventListener("click", async () => {
     try {
       const r = await api("/api/v1/sources/reload", { method: "POST" });

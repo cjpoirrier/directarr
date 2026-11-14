@@ -1,0 +1,677 @@
+"""Download queue workers.
+
+HTTPS direct links use multi-connection ranged downloads (aria2-style) when the
+server supports Accept-Ranges. Google Drive stays on the official Drive API.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import ipaddress
+import os
+import shutil
+import socket
+import uuid
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
+
+from . import gdrive
+from .open_redirect import is_open_interstitial, resolve_interstitial, is_drive_url as open_is_drive
+from .config import (
+    ALLOWED_HOSTS,
+    DOWNLOAD_CONNECTIONS,
+    DOWNLOAD_DIR,
+    DOWNLOAD_MULTI_MIN_MB,
+    MAX_DOWNLOAD_BYTES,
+    STAGING_DIR,
+)
+from .db import connect
+
+USER_AGENT = "Directarr/0.2"
+
+# In-memory cancel flags (DB is source of truth; set is for fast checks in loops)
+_cancelled_jobs: set[str] = set()
+
+
+class DownloadCancelled(Exception):
+    """Raised when a job is cancelled by the operator."""
+
+
+def is_cancelled(job_id: str) -> bool:
+    if job_id in _cancelled_jobs:
+        return True
+    try:
+        with connect() as db:
+            row = db.execute(
+                "SELECT status FROM downloads WHERE id=?", (job_id,)
+            ).fetchone()
+        if row is None:
+            return True
+        status = (row["status"] if hasattr(row, "keys") else row[0]) or ""
+        if str(status).lower() == "cancelled":
+            _cancelled_jobs.add(job_id)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_cancelled(job_id: str) -> None:
+    if is_cancelled(job_id):
+        raise DownloadCancelled("Cancelled by user")
+
+
+def cancel_job(job_id: str) -> dict | None:
+    """Mark a job cancelled. Returns the row dict, or None if not found."""
+    with connect() as db:
+        row = db.execute("SELECT * FROM downloads WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        status = str(row["status"] or "").lower()
+        if status in ("completed", "cancelled"):
+            return dict(row)
+        db.execute(
+            "UPDATE downloads SET status='cancelled', error=COALESCE(error, 'Cancelled by user') WHERE id=?",
+            (job_id,),
+        )
+        row = db.execute("SELECT * FROM downloads WHERE id=?", (job_id,)).fetchone()
+    _cancelled_jobs.add(job_id)
+    return dict(row) if row else None
+
+
+def clear_downloads(*, finished_only: bool = True) -> dict:
+    """Delete finished jobs from the list. finished_only keeps active queue items."""
+    with connect() as db:
+        if finished_only:
+            cur = db.execute(
+                "DELETE FROM downloads WHERE status IN ('completed','failed','cancelled')"
+            )
+        else:
+            # Also cancel any still-running so workers exit, then delete all
+            active = db.execute(
+                "SELECT id FROM downloads WHERE status IN ('queued','downloading')"
+            ).fetchall()
+            for row in active:
+                jid = row["id"] if hasattr(row, "keys") else row[0]
+                _cancelled_jobs.add(str(jid))
+            db.execute(
+                "UPDATE downloads SET status='cancelled', error='Cancelled by clear' "
+                "WHERE status IN ('queued','downloading')"
+            )
+            cur = db.execute("DELETE FROM downloads")
+        deleted = cur.rowcount if cur is not None else 0
+    return {"deleted": deleted, "finished_only": finished_only}
+
+
+def _reject_non_file_response(response: httpx.Response, url: str) -> None:
+    """Block saving HTML/JSON error pages as completed media files."""
+    ct = (response.headers.get("content-type") or "").lower()
+    if any(x in ct for x in ("text/html", "application/xhtml", "text/xml", "application/json")):
+        raise ValueError(
+            f"URL returned {ct or 'non-file'} instead of a downloadable file. "
+            "This is usually a web page or interstitial, not the video. "
+            "Use a source with 'Follow posts' enabled so search returns Drive/open links, "
+            f"not the post page. URL: {url[:180]}"
+        )
+
+
+def safe_move(src: Path, dest: Path) -> Path:
+    """Move src to dest; on cross-device (EXDEV) copy + verify + unlink."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    try:
+        os.rename(src, dest)
+        return dest
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    shutil.copy2(src, dest)
+    try:
+        if src.stat().st_size != dest.stat().st_size:
+            dest.unlink(missing_ok=True)
+            raise OSError("Cross-device copy size mismatch")
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    src.unlink(missing_ok=True)
+    return dest
+
+
+def validate_public_url(url: str) -> str:
+    """Validate HTTPS URLs. Drive hosts are allowed and handled by the Drive API path."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("Only HTTPS download URLs are accepted.")
+    host = parsed.hostname.lower()
+    if host in {"drive.google.com", "docs.google.com"}:
+        return host
+    if ALLOWED_HOSTS and host not in ALLOWED_HOSTS:
+        raise ValueError("Host is not in DIRECTARR_ALLOWED_HOSTS.")
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0])
+            if not ip.is_global:
+                raise ValueError("Private, loopback, and link-local destinations are blocked.")
+    except socket.gaierror:
+        raise ValueError("Hostname could not be resolved.")
+    return host
+
+
+def _safe_filename(title: str, job_id: str) -> str:
+    safe = "".join(c for c in title if c.isalnum() or c in " ._-()[]")[:180].strip()
+    return safe or job_id
+
+
+def _set_progress(
+    job_id: str,
+    progress: int,
+    *,
+    size_bytes: int | None = None,
+    bytes_done: int | None = None,
+) -> None:
+    _check_cancelled(job_id)
+    fields = ["progress=?"]
+    values: list = [min(99, max(0, int(progress)))]
+    if size_bytes is not None and size_bytes >= 0:
+        fields.append("size_bytes=?")
+        values.append(int(size_bytes))
+    if bytes_done is not None and bytes_done >= 0:
+        fields.append("bytes_done=?")
+        values.append(int(bytes_done))
+    values.append(job_id)
+    with connect() as db:
+        db.execute(
+            f"UPDATE downloads SET {', '.join(fields)} WHERE id=?",
+            tuple(values),
+        )
+
+
+def _set_size(job_id: str, size_bytes: int | None) -> None:
+    if size_bytes is None or size_bytes < 0:
+        return
+    with connect() as db:
+        db.execute(
+            "UPDATE downloads SET size_bytes=? WHERE id=? AND (size_bytes IS NULL OR size_bytes=0)",
+            (int(size_bytes), job_id),
+        )
+
+
+def remove_jobs_from_list(job_ids: list[str]) -> dict:
+    """Remove jobs from the DB list only (does not delete files on disk)."""
+    cleaned = [j.strip() for j in job_ids if j and str(j).strip()]
+    if not cleaned:
+        return {"removed": 0, "ids": []}
+    for jid in cleaned:
+        cancel_job(jid)
+    placeholders = ",".join("?" * len(cleaned))
+    with connect() as db:
+        cur = db.execute(
+            f"DELETE FROM downloads WHERE id IN ({placeholders})", cleaned
+        )
+        removed = cur.rowcount if cur is not None else 0
+    return {"removed": removed, "ids": cleaned}
+
+
+def delete_job_files(job_ids: list[str]) -> dict:
+    """Delete physical files for jobs under DOWNLOAD_DIR / STAGING_DIR only.
+
+    Does not remove the job from the list. Clears path when the file is gone.
+    """
+    cleaned = [j.strip() for j in job_ids if j and str(j).strip()]
+    deleted: list[str] = []
+    missing: list[str] = []
+    errors: list[dict] = []
+    download_root = DOWNLOAD_DIR.resolve()
+    staging_root = STAGING_DIR.resolve()
+
+    def _safe_unlink(path: Path) -> bool:
+        try:
+            resolved = path.resolve()
+            if not (
+                resolved == download_root
+                or download_root in resolved.parents
+                or resolved == staging_root
+                or staging_root in resolved.parents
+            ):
+                raise ValueError("Path is outside download/staging directories")
+            if resolved.is_file():
+                resolved.unlink()
+                return True
+            return False
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    for jid in cleaned:
+        with connect() as db:
+            row = db.execute(
+                "SELECT path FROM downloads WHERE id=?", (jid,)
+            ).fetchone()
+        if row is None:
+            missing.append(jid)
+            continue
+        path_str = row["path"] if hasattr(row, "keys") else row[0]
+        removed_any = False
+        try:
+            if path_str:
+                if _safe_unlink(Path(path_str)):
+                    removed_any = True
+            # staging leftovers
+            for candidate in (
+                STAGING_DIR / f"{jid}.part",
+                *(STAGING_DIR.glob(f"{jid}.part.*")),
+            ):
+                try:
+                    if _safe_unlink(candidate):
+                        removed_any = True
+                except Exception:
+                    pass
+            if removed_any:
+                deleted.append(jid)
+                with connect() as db:
+                    db.execute(
+                        "UPDATE downloads SET path=NULL WHERE id=?",
+                        (jid,),
+                    )
+            else:
+                missing.append(jid)
+        except Exception as exc:
+            errors.append({"id": jid, "error": str(exc)[:300]})
+
+    return {
+        "deleted": deleted,
+        "missing": missing,
+        "errors": errors,
+        "deleted_count": len(deleted),
+    }
+
+
+def enqueue(title: str, url: str, drive_file_id: str | None = None) -> str:
+    """Validate and insert a queued job. Caller schedules run_download."""
+    cleaned_id = None
+    if drive_file_id:
+        cleaned_id = drive_file_id.strip()
+        if not cleaned_id or not all(c.isalnum() or c in "-_" for c in cleaned_id):
+            raise ValueError("Invalid drive_file_id.")
+    else:
+        validate_public_url(url)
+    job_id = str(uuid.uuid4())
+    with connect() as db:
+        db.execute(
+            "INSERT INTO downloads(id,title,url,status,drive_file_id) VALUES(?,?,?,'queued',?)",
+            (job_id, title, url, cleaned_id),
+        )
+    return job_id
+
+
+async def run_download(
+    job_id: str,
+    title: str,
+    url: str,
+    drive_file_id: str | None = None,
+):
+    temp = STAGING_DIR / f"{job_id}.part"
+    target = DOWNLOAD_DIR / _safe_filename(title, job_id)
+    segment_paths: list[Path] = []
+    try:
+        if is_cancelled(job_id):
+            raise DownloadCancelled("Cancelled by user")
+
+        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        with connect() as db:
+            db.execute(
+                "UPDATE downloads SET status='downloading',progress=0,error=NULL WHERE id=? AND status!='cancelled'",
+                (job_id,),
+            )
+
+        _check_cancelled(job_id)
+
+        # AnimeKaizen-style /open/?id= pages embed the real Drive URL
+        if not drive_file_id and is_open_interstitial(url):
+            try:
+                dest = await asyncio.to_thread(resolve_interstitial, url)
+                url = dest
+            except Exception as exc:
+                raise ValueError(f"Could not resolve open/redirect link: {exc}") from exc
+
+        if drive_file_id or gdrive.is_drive_url(url) or open_is_drive(url):
+            target = await _download_drive(job_id, title, url, temp, drive_file_id)
+        else:
+            segment_paths = await _download_http(job_id, url, temp)
+            safe_move(temp, target)
+
+        _check_cancelled(job_id)
+        final_size = None
+        try:
+            if target.is_file():
+                final_size = target.stat().st_size
+        except OSError:
+            pass
+        with connect() as db:
+            if final_size is not None:
+                db.execute(
+                    "UPDATE downloads SET status='completed',progress=100,path=?,size_bytes=?,bytes_done=? "
+                    "WHERE id=? AND status!='cancelled'",
+                    (str(target), final_size, final_size, job_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=? AND status!='cancelled'",
+                    (str(target), job_id),
+                )
+    except DownloadCancelled:
+        temp.unlink(missing_ok=True)
+        for p in segment_paths:
+            p.unlink(missing_ok=True)
+        with connect() as db:
+            db.execute(
+                "UPDATE downloads SET status='cancelled', error='Cancelled by user' WHERE id=?",
+                (job_id,),
+            )
+        _cancelled_jobs.discard(job_id)
+    except Exception as exc:
+        temp.unlink(missing_ok=True)
+        for p in segment_paths:
+            p.unlink(missing_ok=True)
+        if is_cancelled(job_id):
+            with connect() as db:
+                db.execute(
+                    "UPDATE downloads SET status='cancelled', error='Cancelled by user' WHERE id=?",
+                    (job_id,),
+                )
+            _cancelled_jobs.discard(job_id)
+            return
+        with connect() as db:
+            db.execute(
+                "UPDATE downloads SET status='failed',error=? WHERE id=?",
+                (str(exc)[:1000], job_id),
+            )
+
+
+async def _probe_http(client: httpx.AsyncClient, url: str) -> tuple[str, int | None, bool]:
+    """Return (final_url, content_length or None, accept_ranges)."""
+    headers = {"User-Agent": USER_AGENT}
+    # Prefer HEAD; some hosts block it — fall back to a 1-byte range GET.
+    try:
+        head = await client.head(url, headers=headers, follow_redirects=True)
+        if head.status_code < 400:
+            final = str(head.url)
+            validate_public_url(final)
+            cl = head.headers.get("content-length")
+            size = int(cl) if cl and cl.isdigit() else None
+            ar = "bytes" in (head.headers.get("accept-ranges") or "").lower()
+            if size is not None or ar:
+                return final, size, ar
+    except Exception:
+        pass
+
+    # Range probe
+    probe = await client.get(
+        url,
+        headers={**headers, "Range": "bytes=0-0"},
+        follow_redirects=True,
+    )
+    final = str(probe.url)
+    validate_public_url(final)
+    if probe.status_code in (200, 206):
+        cr = probe.headers.get("content-range") or ""
+        # Content-Range: bytes 0-0/12345
+        size = None
+        if "/" in cr:
+            total = cr.rsplit("/", 1)[-1].strip()
+            if total.isdigit():
+                size = int(total)
+        if size is None:
+            cl = probe.headers.get("content-length")
+            if probe.status_code == 200 and cl and cl.isdigit():
+                size = int(cl)
+        ar = probe.status_code == 206 or "bytes" in (probe.headers.get("accept-ranges") or "").lower()
+        return final, size, ar
+    probe.raise_for_status()
+    return final, None, False
+
+
+async def _download_http(job_id: str, url: str, temp: Path) -> list[Path]:
+    """Download via single or multi-connection HTTP. Returns segment paths to clean up."""
+    validate_public_url(url)
+    limits = httpx.Limits(max_connections=DOWNLOAD_CONNECTIONS + 2, max_keepalive_connections=DOWNLOAD_CONNECTIONS)
+    async with httpx.AsyncClient(timeout=None, follow_redirects=True, limits=limits) as client:
+        final_url, size, accept_ranges = await _probe_http(client, url)
+        if size is not None:
+            _set_size(job_id, size)
+        if size is not None and size > MAX_DOWNLOAD_BYTES:
+            raise ValueError("Configured maximum download size exceeded.")
+
+        min_multi = DOWNLOAD_MULTI_MIN_MB * 1024 * 1024
+        use_multi = (
+            DOWNLOAD_CONNECTIONS > 1
+            and accept_ranges
+            and size is not None
+            and size >= min_multi
+        )
+
+        if use_multi:
+            try:
+                return await _download_http_multi(client, job_id, final_url, temp, size)
+            except Exception:
+                for i in range(DOWNLOAD_CONNECTIONS + 4):
+                    (STAGING_DIR / f"{job_id}.part.{i}").unlink(missing_ok=True)
+                temp.unlink(missing_ok=True)
+        await _download_http_single(client, job_id, final_url, temp, size)
+        return []
+
+
+async def _download_http_single(
+    client: httpx.AsyncClient,
+    job_id: str,
+    url: str,
+    temp: Path,
+    known_size: int | None,
+) -> None:
+    """Single-stream download with resume if a partial .part already exists."""
+    headers = {"User-Agent": USER_AGENT}
+    existing = 0
+    if temp.is_file():
+        existing = temp.stat().st_size
+        if known_size and existing >= known_size:
+            _set_progress(job_id, 99, size_bytes=known_size, bytes_done=existing)
+            return
+        if existing > 0:
+            headers["Range"] = f"bytes={existing}-"
+
+    mode = "ab" if existing else "wb"
+    async with client.stream("GET", url, headers=headers) as response:
+        if existing and response.status_code == 200:
+            # Server ignored Range — restart
+            existing = 0
+            mode = "wb"
+        elif existing and response.status_code not in (200, 206):
+            response.raise_for_status()
+        elif not existing:
+            response.raise_for_status()
+
+        if not existing:
+            _reject_non_file_response(response, url)
+
+        if known_size is None:
+            cl = response.headers.get("content-length")
+            if cl and cl.isdigit():
+                # If resumed, content-length is remaining bytes
+                known_size = int(cl) + existing
+            if known_size is not None:
+                _set_size(job_id, known_size)
+
+        total = existing
+        with temp.open(mode) as output:
+            async for chunk in response.aiter_bytes(1024 * 256):
+                _check_cancelled(job_id)
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("Configured maximum download size exceeded.")
+                output.write(chunk)
+                if known_size and known_size > 0:
+                    _set_progress(
+                        job_id,
+                        total * 100 // known_size,
+                        size_bytes=known_size,
+                        bytes_done=total,
+                    )
+                else:
+                    _set_progress(
+                        job_id,
+                        min(99, total * 100 // MAX_DOWNLOAD_BYTES),
+                        bytes_done=total,
+                    )
+
+
+async def _download_http_multi(
+    client: httpx.AsyncClient,
+    job_id: str,
+    url: str,
+    temp: Path,
+    size: int,
+) -> list[Path]:
+    """Split the file into parallel Range requests, then assemble."""
+    n = DOWNLOAD_CONNECTIONS
+    max_parts = max(1, size // (1024 * 1024))
+    n = max(1, min(n, max_parts))
+
+    part_size = size // n
+    ranges: list[tuple[int, int]] = []
+    for i in range(n):
+        start_b = i * part_size
+        end_b = size - 1 if i == n - 1 else (start_b + part_size - 1)
+        ranges.append((start_b, end_b))
+
+    segment_paths = [STAGING_DIR / f"{job_id}.part.{i}" for i in range(n)]
+    done_bytes = [0] * n
+    lock = asyncio.Lock()
+    _set_size(job_id, size)
+
+    async def report() -> None:
+        total = sum(done_bytes)
+        if size > 0:
+            _set_progress(
+                job_id,
+                total * 100 // size,
+                size_bytes=size,
+                bytes_done=total,
+            )
+
+    async def fetch_part(idx: int, start_b: int, end_b: int, seg: Path) -> None:
+        expected = end_b - start_b + 1
+        if seg.is_file() and seg.stat().st_size >= expected:
+            done_bytes[idx] = expected
+            async with lock:
+                await report()
+            return
+
+        have = seg.stat().st_size if seg.is_file() else 0
+        if have > expected:
+            seg.unlink(missing_ok=True)
+            have = 0
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Range": f"bytes={start_b + have}-{end_b}",
+        }
+        async with client.stream("GET", url, headers=headers) as response:
+            if response.status_code == 200:
+                raise ValueError("Server ignored Range; multi-connection not supported")
+            if response.status_code != 206:
+                response.raise_for_status()
+            mode = "ab" if have else "wb"
+            written = have
+            with seg.open(mode) as output:
+                async for chunk in response.aiter_bytes(1024 * 256):
+                    _check_cancelled(job_id)
+                    output.write(chunk)
+                    written += len(chunk)
+                    done_bytes[idx] = min(written, expected)
+                    async with lock:
+                        await report()
+        got = seg.stat().st_size
+        if got < expected:
+            raise ValueError(f"Segment {idx} incomplete: got {got}, expected {expected}")
+        done_bytes[idx] = expected
+        async with lock:
+            await report()
+
+    await asyncio.gather(
+        *[
+            fetch_part(i, s, e, p)
+            for i, ((s, e), p) in enumerate(zip(ranges, segment_paths))
+        ]
+    )
+
+    with temp.open("wb") as out:
+        for seg in segment_paths:
+            with seg.open("rb") as inp:
+                shutil.copyfileobj(inp, out, length=1024 * 1024)
+            seg.unlink(missing_ok=True)
+
+    if temp.stat().st_size < int(size * 0.99):
+        raise ValueError(
+            f"Assembled file incomplete: got {temp.stat().st_size}, expected {size}"
+        )
+    _set_progress(job_id, 99, size_bytes=size, bytes_done=size)
+    return []
+
+
+async def _download_drive(
+    job_id: str,
+    title: str,
+    url: str,
+    temp: Path,
+    drive_file_id: str | None,
+) -> Path:
+    """Authorized Drive API download. Returns the final target path."""
+    file_id = (drive_file_id or "").strip() or None
+    dest_name = _safe_filename(title, job_id)
+    known_size: int | None = None
+
+    if not file_id:
+        ref = gdrive.parse_drive_url(url)
+        meta = gdrive.get_item_metadata(ref.file_id)
+        if meta.is_folder:
+            raise ValueError(
+                "URL points to a Google Drive folder. "
+                "Use Queue/Resolve to expand the folder and pick files."
+            )
+        file_id = meta.id
+        if meta.name:
+            dest_name = _safe_filename(meta.name, job_id)
+        if getattr(meta, "size", None):
+            known_size = int(meta.size)
+
+    if known_size is None:
+        try:
+            meta = gdrive.get_item_metadata(file_id)
+            if getattr(meta, "size", None):
+                known_size = int(meta.size)
+            if meta.name and not drive_file_id:
+                dest_name = _safe_filename(meta.name, job_id)
+        except Exception:
+            pass
+
+    if known_size is not None:
+        _set_size(job_id, known_size)
+
+    def progress_cb(pct: int):
+        done = None
+        if known_size is not None and pct is not None:
+            done = int(known_size * max(0, min(100, pct)) / 100)
+        _set_progress(
+            job_id,
+            pct,
+            size_bytes=known_size,
+            bytes_done=done,
+        )
+
+    await asyncio.to_thread(gdrive.download_file_to_path, file_id, temp, progress_cb)
+    target = DOWNLOAD_DIR / dest_name
+    return safe_move(temp, target)
