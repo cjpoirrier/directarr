@@ -59,7 +59,7 @@
     const s = (status || "").toLowerCase();
     let cls = "muted";
     if (s === "completed") cls = "ok";
-    else if (s === "failed") cls = "err";
+    else if (s === "failed" || s === "cancelled") cls = "err";
     else if (s === "downloading" || s === "queued") cls = "warn";
     return `<span class="pill ${cls}">${status || "—"}</span>`;
   }
@@ -103,6 +103,17 @@
   }
 
 
+  function setMobileNavOpen(open) {
+    const shell = $("#app-shell");
+    const backdrop = $("#nav-backdrop");
+    if (shell) shell.classList.toggle("nav-open", !!open);
+    if (backdrop) backdrop.hidden = !open;
+    ["#menu-toggle", "#topbar-menu"].forEach((sel) => {
+      const btn = $(sel);
+      if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
   function setView(name) {
     currentView = name;
     $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
@@ -125,6 +136,7 @@
     if (name === "settings") updateSettings();
     // Restart (or stop) the download poller for the new view
     manageDownloadPolling();
+    setMobileNavOpen(false);
   }
 
   const loginForm = $("#login-form");
@@ -470,19 +482,55 @@
       return;
     }
     el.innerHTML = `<table>
-      <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th>Error / path</th></tr></thead>
+      <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th>Error / path</th><th></th></tr></thead>
       <tbody>
         ${rows
-          .map(
-            (r) => `<tr>
+          .map((r) => {
+            const st = (r.status || "").toLowerCase();
+            const canCancel = st === "queued" || st === "downloading";
+            const actions = canCancel
+              ? `<button class="btn sm danger" data-cancel-id="${esc(r.id)}">Cancel</button>`
+              : `<button class="btn sm" data-remove-id="${esc(r.id)}">Remove</button>`;
+            return `<tr>
           <td class="title">${esc(r.title)}</td>
           <td>${statusPill(r.status)}</td>
           <td>${progressCell(r)}</td>
           <td class="title muted">${esc(r.error || r.path || "")}</td>
-        </tr>`
-          )
+          <td class="actions">${actions}</td>
+        </tr>`;
+          })
           .join("")}
       </tbody></table>`;
+    el.querySelectorAll("[data-cancel-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api(`/api/v1/downloads/${encodeURIComponent(btn.dataset.cancelId)}/cancel`, {
+            method: "POST",
+          });
+          toast("Download cancelled");
+          await loadDownloads({ silent: true });
+        } catch (e) {
+          toast(e.message, true);
+          btn.disabled = false;
+        }
+      });
+    });
+    el.querySelectorAll("[data-remove-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api(`/api/v1/downloads/${encodeURIComponent(btn.dataset.removeId)}`, {
+            method: "DELETE",
+          });
+          toast("Removed from list");
+          await loadDownloads({ silent: true });
+        } catch (e) {
+          toast(e.message, true);
+          btn.disabled = false;
+        }
+      });
+    });
   }
 
   async function loadReleases() {
@@ -789,6 +837,23 @@
   // Navigation
   $$(".nav-btn").forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view)));
 
+  ["#menu-toggle", "#topbar-menu"].forEach((sel) => {
+    const btn = $(sel);
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      const shell = $("#app-shell");
+      const open = !(shell && shell.classList.contains("nav-open"));
+      setMobileNavOpen(open);
+    });
+  });
+  const navBackdrop = $("#nav-backdrop");
+  if (navBackdrop) {
+    navBackdrop.addEventListener("click", () => setMobileNavOpen(false));
+  }
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 900) setMobileNavOpen(false);
+  });
+
   // API key
   const saved = localStorage.getItem(KEY);
   const keyEl = $("#api-key");
@@ -841,15 +906,91 @@
     });
   }
 
+  const FILTER_QUERY_TERMS = {
+    "1080p": "1080p",
+    "720p": "720p",
+    "2160p": "2160p",
+    "480p": "480p",
+    dual: "dual audio",
+    multi: "multi audio",
+    hevc: "x265",
+    av1: "AV1",
+    x264: "x264",
+  };
+
+  function selectedSearchFilters() {
+    return $$("#search-filters input[data-filter]:checked").map((el) => el.dataset.filter);
+  }
+
+  function buildSearchQuery(base) {
+    const parts = [base.trim()];
+    for (const key of selectedSearchFilters()) {
+      const term = FILTER_QUERY_TERMS[key];
+      if (term && !parts.join(" ").toLowerCase().includes(term.toLowerCase())) {
+        parts.push(term);
+      }
+    }
+    return parts.join(" ").trim();
+  }
+
+  function releaseMatchesFilters(r, filters) {
+    if (!filters.length) return true;
+    const title = (r.title || "").toLowerCase();
+    const res = (r.resolution || "").toLowerCase();
+    const codec = (r.codec || "").toLowerCase();
+    const dual =
+      !!r.dual_audio ||
+      /dual[\s._-]*audio|multi[\s._-]*audio|\bdual\b|\bmulti\b/i.test(r.title || "");
+
+    const resFilters = filters.filter((f) => ["1080p", "720p", "2160p", "480p"].includes(f));
+    if (resFilters.length) {
+      const ok = resFilters.some((f) => res === f || title.includes(f));
+      if (!ok) return false;
+    }
+    if (filters.includes("dual") || filters.includes("multi")) {
+      if (!dual && !title.includes("dual") && !title.includes("multi")) return false;
+    }
+    if (filters.includes("hevc")) {
+      if (
+        !(
+          codec.includes("hevc") ||
+          codec.includes("x265") ||
+          codec.includes("h.265") ||
+          /x265|hevc|h\.?265/i.test(title)
+        )
+      ) {
+        return false;
+      }
+    }
+    if (filters.includes("av1")) {
+      if (!(codec.includes("av1") || title.includes("av1"))) return false;
+    }
+    if (filters.includes("x264")) {
+      if (!(codec.includes("x264") || codec.includes("h.264") || /x264|h\.?264/i.test(title))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   $("#search-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const q = $("#search-q").value.trim();
-    if (!q) return;
+    const base = $("#search-q").value.trim();
+    if (!base) return;
+    const filters = selectedSearchFilters();
+    const q = buildSearchQuery(base);
     $("#search-results").innerHTML = `<p class="muted">Searching…</p>`;
     try {
       const data = await api(`/api/v1/search?q=${encodeURIComponent(q)}`);
-      renderReleasesTable($("#search-results"), data.releases || [], { queue: true });
-      toast(`Found ${data.count ?? (data.releases || []).length} releases`);
+      let rows = data.releases || [];
+      const before = rows.length;
+      rows = rows.filter((r) => releaseMatchesFilters(r, filters));
+      renderReleasesTable($("#search-results"), rows, { queue: true });
+      if (filters.length) {
+        toast(`Found ${before} · showing ${rows.length} after filters`);
+      } else {
+        toast(`Found ${data.count ?? before} releases`);
+      }
     } catch (e) {
       $("#search-results").innerHTML = "";
       toast(e.message, true);
@@ -858,6 +999,45 @@
 
   $("#refresh-releases").addEventListener("click", loadReleases);
   $("#refresh-downloads").addEventListener("click", () => loadDownloads({ silent: false }));
+
+  const clearFinishedBtn = $("#clear-finished-downloads");
+  if (clearFinishedBtn) {
+    clearFinishedBtn.addEventListener("click", async () => {
+      clearFinishedBtn.disabled = true;
+      try {
+        const res = await api("/api/v1/downloads/clear", {
+          method: "POST",
+          body: { finished_only: true },
+        });
+        toast(`Cleared ${res.deleted || 0} finished job(s)`);
+        await loadDownloads({ silent: true });
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        clearFinishedBtn.disabled = false;
+      }
+    });
+  }
+
+  const clearAllBtn = $("#clear-all-downloads");
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener("click", async () => {
+      if (!confirm("Cancel any active downloads and clear the entire list?")) return;
+      clearAllBtn.disabled = true;
+      try {
+        const res = await api("/api/v1/downloads/clear", {
+          method: "POST",
+          body: { finished_only: false },
+        });
+        toast(`Cleared ${res.deleted || 0} job(s)`);
+        await loadDownloads({ silent: true });
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        clearAllBtn.disabled = false;
+      }
+    });
+  }
   $("#reload-sources").addEventListener("click", async () => {
     try {
       const r = await api("/api/v1/sources/reload", { method: "POST" });

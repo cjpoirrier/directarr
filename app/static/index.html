@@ -25,15 +25,18 @@
   </div>
 
   <div class="app" id="app-shell" hidden>
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <span class="logo">D</span>
         <div>
           <strong>Directarr</strong>
           <small>Anime DDL Indexer</small>
         </div>
+        <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+          <span class="menu-toggle-bars" aria-hidden="true"></span>
+        </button>
       </div>
-      <nav>
+      <nav id="sidebar-nav">
         <button class="nav-btn active" data-view="dashboard">Dashboard</button>
         <button class="nav-btn" data-view="search">Search</button>
         <button class="nav-btn" data-view="releases">Releases</button>
@@ -46,9 +49,13 @@
         <span id="conn-status" class="pill muted">API key required</span>
       </div>
     </aside>
+    <div class="nav-backdrop" id="nav-backdrop" hidden></div>
 
     <main class="main">
       <header class="topbar">
+        <button type="button" class="menu-toggle topbar-menu" id="topbar-menu" aria-label="Open menu">
+          <span class="menu-toggle-bars" aria-hidden="true"></span>
+        </button>
         <h1 id="view-title">Dashboard</h1>
       </header>
 
@@ -71,7 +78,19 @@
             <input id="search-q" type="search" placeholder="Search anime (e.g. frieren, rezero)" required />
             <button class="btn primary" type="submit">Search</button>
           </form>
-          <p class="hint">Runs enabled source adapters and stores results for Torznab / the Releases tab.</p>
+          <div class="filters" id="search-filters">
+            <span class="filters-label">Filters</span>
+            <label class="chip"><input type="checkbox" data-filter="1080p" /> 1080p</label>
+            <label class="chip"><input type="checkbox" data-filter="720p" /> 720p</label>
+            <label class="chip"><input type="checkbox" data-filter="2160p" /> 2160p</label>
+            <label class="chip"><input type="checkbox" data-filter="480p" /> 480p</label>
+            <label class="chip"><input type="checkbox" data-filter="dual" /> Dual Audio</label>
+            <label class="chip"><input type="checkbox" data-filter="multi" /> Multi Audio</label>
+            <label class="chip"><input type="checkbox" data-filter="hevc" /> HEVC / x265</label>
+            <label class="chip"><input type="checkbox" data-filter="av1" /> AV1</label>
+            <label class="chip"><input type="checkbox" data-filter="x264" /> x264</label>
+          </div>
+          <p class="hint">Filters append to the source query and refine results locally (resolution, dual audio, codec).</p>
           <div id="search-results" class="table-wrap"></div>
         </div>
       </section>
@@ -93,6 +112,8 @@
             <div class="row">
               <span id="auto-refresh-label" class="hint">Auto-refresh on</span>
               <button class="btn" id="refresh-downloads" type="button">Refresh</button>
+              <button class="btn" id="clear-finished-downloads" type="button" title="Remove completed, failed, and cancelled">Clear finished</button>
+              <button class="btn danger" id="clear-all-downloads" type="button" title="Cancel active jobs and remove entire list">Clear all</button>
             </div>
           </div>
           <div id="downloads-table" class="table-wrap"></div>

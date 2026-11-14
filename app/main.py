@@ -20,9 +20,9 @@ from .auth import (
 )
 from .config import set_api_key
 from .db import connect, init_db
-from .downloader import enqueue, run_download
+from .downloader import cancel_job, clear_downloads, enqueue, run_download
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
-from .parser import save_release
+from .parser import enrich as enrich_title, save_release
 from .sources import (
     add_source,
     delete_source,
@@ -168,6 +168,7 @@ async def json_search(request: Request,
         try:
             for release in await adapter.search(q):
                 rid = save_release(release)
+                _s, _e, res, codec, dual = enrich_title(release.title)
                 saved.append(
                     {
                         "id": rid,
@@ -175,10 +176,11 @@ async def json_search(request: Request,
                         "url": release.url,
                         "source": release.source,
                         "size": release.size,
-                        "season": release.season,
-                        "episode": release.episode,
-                        "resolution": release.resolution,
-                        "codec": release.codec,
+                        "season": release.season if release.season is not None else _s,
+                        "episode": release.episode if release.episode is not None else _e,
+                        "resolution": release.resolution or res,
+                        "codec": release.codec or codec,
+                        "dual_audio": dual,
                     }
                 )
         except Exception:
@@ -379,6 +381,49 @@ def download_status(request: Request, job_id: str, x_api_key: str | None = Heade
     if row is None:
         raise HTTPException(404, "Job not found")
     return dict(row)
+
+
+@app.post("/api/v1/downloads/{job_id}/cancel")
+def cancel_download(
+    request: Request, job_id: str, x_api_key: str | None = Header(default=None)
+):
+    """Cancel a queued or in-progress download. Completed jobs are left alone."""
+    require_auth(request, x_api_key)
+    row = cancel_job(job_id)
+    if row is None:
+        raise HTTPException(404, "Job not found")
+    return row
+
+
+@app.delete("/api/v1/downloads/{job_id}")
+def delete_download(
+    request: Request, job_id: str, x_api_key: str | None = Header(default=None)
+):
+    """Cancel if still active, then remove the job from the list."""
+    require_auth(request, x_api_key)
+    cancel_job(job_id)
+    with connect() as db:
+        cur = db.execute("DELETE FROM downloads WHERE id=?", (job_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Job not found")
+    return {"ok": True, "id": job_id}
+
+
+class ClearDownloadsRequest(BaseModel):
+    finished_only: bool = True
+
+
+@app.post("/api/v1/downloads/clear")
+def clear_download_list(
+    request: Request,
+    body: ClearDownloadsRequest | None = None,
+    x_api_key: str | None = Header(default=None),
+):
+    """Remove finished jobs from the queue list. finished_only=false clears everything."""
+    require_auth(request, x_api_key)
+    finished_only = True if body is None else bool(body.finished_only)
+    result = clear_downloads(finished_only=finished_only)
+    return {"ok": True, **result}
 
 
 @app.get("/api/v1/settings/security")

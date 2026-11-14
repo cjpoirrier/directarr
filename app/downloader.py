@@ -32,6 +32,79 @@ from .db import connect
 
 USER_AGENT = "Directarr/0.2"
 
+# In-memory cancel flags (DB is source of truth; set is for fast checks in loops)
+_cancelled_jobs: set[str] = set()
+
+
+class DownloadCancelled(Exception):
+    """Raised when a job is cancelled by the operator."""
+
+
+def is_cancelled(job_id: str) -> bool:
+    if job_id in _cancelled_jobs:
+        return True
+    try:
+        with connect() as db:
+            row = db.execute(
+                "SELECT status FROM downloads WHERE id=?", (job_id,)
+            ).fetchone()
+        if row is None:
+            return True
+        status = (row["status"] if hasattr(row, "keys") else row[0]) or ""
+        if str(status).lower() == "cancelled":
+            _cancelled_jobs.add(job_id)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _check_cancelled(job_id: str) -> None:
+    if is_cancelled(job_id):
+        raise DownloadCancelled("Cancelled by user")
+
+
+def cancel_job(job_id: str) -> dict | None:
+    """Mark a job cancelled. Returns the row dict, or None if not found."""
+    with connect() as db:
+        row = db.execute("SELECT * FROM downloads WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        status = str(row["status"] or "").lower()
+        if status in ("completed", "cancelled"):
+            return dict(row)
+        db.execute(
+            "UPDATE downloads SET status='cancelled', error=COALESCE(error, 'Cancelled by user') WHERE id=?",
+            (job_id,),
+        )
+        row = db.execute("SELECT * FROM downloads WHERE id=?", (job_id,)).fetchone()
+    _cancelled_jobs.add(job_id)
+    return dict(row) if row else None
+
+
+def clear_downloads(*, finished_only: bool = True) -> dict:
+    """Delete finished jobs from the list. finished_only keeps active queue items."""
+    with connect() as db:
+        if finished_only:
+            cur = db.execute(
+                "DELETE FROM downloads WHERE status IN ('completed','failed','cancelled')"
+            )
+        else:
+            # Also cancel any still-running so workers exit, then delete all
+            active = db.execute(
+                "SELECT id FROM downloads WHERE status IN ('queued','downloading')"
+            ).fetchall()
+            for row in active:
+                jid = row["id"] if hasattr(row, "keys") else row[0]
+                _cancelled_jobs.add(str(jid))
+            db.execute(
+                "UPDATE downloads SET status='cancelled', error='Cancelled by clear' "
+                "WHERE status IN ('queued','downloading')"
+            )
+            cur = db.execute("DELETE FROM downloads")
+        deleted = cur.rowcount if cur is not None else 0
+    return {"deleted": deleted, "finished_only": finished_only}
+
 
 def _reject_non_file_response(response: httpx.Response, url: str) -> None:
     """Block saving HTML/JSON error pages as completed media files."""
@@ -95,6 +168,7 @@ def _safe_filename(title: str, job_id: str) -> str:
 
 
 def _set_progress(job_id: str, progress: int) -> None:
+    _check_cancelled(job_id)
     with connect() as db:
         db.execute(
             "UPDATE downloads SET progress=? WHERE id=?",
@@ -130,13 +204,18 @@ async def run_download(
     target = DOWNLOAD_DIR / _safe_filename(title, job_id)
     segment_paths: list[Path] = []
     try:
+        if is_cancelled(job_id):
+            raise DownloadCancelled("Cancelled by user")
+
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         STAGING_DIR.mkdir(parents=True, exist_ok=True)
         with connect() as db:
             db.execute(
-                "UPDATE downloads SET status='downloading',progress=0,error=NULL WHERE id=?",
+                "UPDATE downloads SET status='downloading',progress=0,error=NULL WHERE id=? AND status!='cancelled'",
                 (job_id,),
             )
+
+        _check_cancelled(job_id)
 
         # AnimeKaizen-style /open/?id= pages embed the real Drive URL
         if not drive_file_id and is_open_interstitial(url):
@@ -152,15 +231,34 @@ async def run_download(
             segment_paths = await _download_http(job_id, url, temp)
             safe_move(temp, target)
 
+        _check_cancelled(job_id)
         with connect() as db:
             db.execute(
-                "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=?",
+                "UPDATE downloads SET status='completed',progress=100,path=? WHERE id=? AND status!='cancelled'",
                 (str(target), job_id),
             )
+    except DownloadCancelled:
+        temp.unlink(missing_ok=True)
+        for p in segment_paths:
+            p.unlink(missing_ok=True)
+        with connect() as db:
+            db.execute(
+                "UPDATE downloads SET status='cancelled', error='Cancelled by user' WHERE id=?",
+                (job_id,),
+            )
+        _cancelled_jobs.discard(job_id)
     except Exception as exc:
         temp.unlink(missing_ok=True)
         for p in segment_paths:
             p.unlink(missing_ok=True)
+        if is_cancelled(job_id):
+            with connect() as db:
+                db.execute(
+                    "UPDATE downloads SET status='cancelled', error='Cancelled by user' WHERE id=?",
+                    (job_id,),
+                )
+            _cancelled_jobs.discard(job_id)
+            return
         with connect() as db:
             db.execute(
                 "UPDATE downloads SET status='failed',error=? WHERE id=?",
@@ -280,6 +378,7 @@ async def _download_http_single(
         total = existing
         with temp.open(mode) as output:
             async for chunk in response.aiter_bytes(1024 * 256):
+                _check_cancelled(job_id)
                 total += len(chunk)
                 if total > MAX_DOWNLOAD_BYTES:
                     raise ValueError("Configured maximum download size exceeded.")
@@ -343,6 +442,7 @@ async def _download_http_multi(
             written = have
             with seg.open(mode) as output:
                 async for chunk in response.aiter_bytes(1024 * 256):
+                    _check_cancelled(job_id)
                     output.write(chunk)
                     written += len(chunk)
                     done_bytes[idx] = min(written, expected)
