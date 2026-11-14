@@ -1,6 +1,7 @@
 (() => {
   const KEY = "directarr_api_key";
   let downloadPollTimer = null;
+  let downloadPollGen = 0;
   let lastDownloads = [];
   let currentView = "dashboard";
   const $ = (sel) => document.querySelector(sel);
@@ -122,6 +123,8 @@
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
+    // Restart (or stop) the download poller for the new view
+    manageDownloadPolling();
   }
 
   const loginForm = $("#login-form");
@@ -200,18 +203,24 @@
       clearTimeout(downloadPollTimer);
       downloadPollTimer = null;
     }
-    if (currentView !== "downloads" && currentView !== "dashboard") return;
+    const gen = ++downloadPollGen;
+    if (currentView !== "downloads" && currentView !== "dashboard") {
+      updateAutoRefreshLabel(false);
+      return;
+    }
 
     const tick = async () => {
+      if (gen !== downloadPollGen) return;
       try {
         if (currentView === "downloads") await loadDownloads({ silent: true });
         else if (currentView === "dashboard") await loadDashboard({ silent: true });
       } finally {
-        scheduleNext();
+        if (gen === downloadPollGen) scheduleNext();
       }
     };
 
     const scheduleNext = () => {
+      if (gen !== downloadPollGen) return;
       if (downloadPollTimer) {
         clearTimeout(downloadPollTimer);
         downloadPollTimer = null;
