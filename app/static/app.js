@@ -21,26 +21,34 @@
   }
 
   async function api(path, opts = {}) {
-    const headers = Object.assign({ "X-Api-Key": apiKey() }, opts.headers || {});
-    if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
+    const headers = Object.assign({}, opts.headers || {});
+    const key = apiKey();
+    if (key) headers["X-Api-Key"] = key;
+    let body = opts.body;
+    if (body && typeof body === "object" && !(body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(opts.body);
+      body = JSON.stringify(body);
     }
-    const res = await fetch(path, { ...opts, headers });
-    let data = null;
+    const res = await fetch(path, {
+      method: opts.method || "GET",
+      headers,
+      body,
+      credentials: "same-origin",
+    });
     const text = await res.text();
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
     if (!res.ok) {
       if (res.status === 401 && path.indexOf("/api/v1/auth/") !== 0) {
         showLogin();
       }
-      const text = await res.text();
-      let msg = text;
-      try {
-        const j = JSON.parse(text);
-        msg = j.detail || j.message || text;
-      } catch {}
-      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      let msg = data && data.detail ? data.detail : text;
+      if (typeof msg !== "string") msg = JSON.stringify(msg);
+      throw new Error(msg || res.statusText || "Request failed");
     }
     return data;
   }
@@ -63,31 +71,35 @@
   }
 
   function showLogin() {
-    document.body.classList.add("login-locked");
     const screen = $("#login-screen");
+    const shell = $("#app-shell");
     if (screen) screen.classList.remove("hidden");
+    if (shell) shell.hidden = true;
   }
 
   function hideLogin() {
-    document.body.classList.remove("login-locked");
     const screen = $("#login-screen");
+    const shell = $("#app-shell");
     if (screen) screen.classList.add("hidden");
+    if (shell) shell.hidden = false;
   }
 
   async function ensureAuth() {
     try {
-      const st = await fetch("/api/v1/auth/status", { credentials: "same-origin" }).then((r) => r.json());
-      if (st.authenticated) {
+      const res = await fetch("/api/v1/auth/status", { credentials: "same-origin" });
+      const st = await res.json();
+      if (st && st.authenticated) {
         hideLogin();
         return true;
       }
       showLogin();
       return false;
-    } catch {
+    } catch (e) {
       showLogin();
       return false;
     }
   }
+
 
   function setView(name) {
     currentView = name;
@@ -116,32 +128,37 @@
       ev.preventDefault();
       const err = $("#login-error");
       if (err) err.textContent = "";
+      const userEl = $("#login-user");
+      const passEl = $("#login-pass");
       try {
         const res = await fetch("/api/v1/auth/login", {
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            username: ($("#login-user") && $("#login-user").value.trim()) || "",
-            password: ($("#login-pass") && $("#login-pass").value) || "",
+            username: (userEl && userEl.value.trim()) || "",
+            password: (passEl && passEl.value) || "",
           }),
         });
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch {}
         if (!res.ok) {
-          const t = await res.text();
-          let msg = "Login failed";
-          try { msg = JSON.parse(t).detail || msg; } catch {}
-          if (err) err.textContent = typeof msg === "string" ? msg : "Login failed";
+          let msg = (data && data.detail) || "Invalid username or password";
+          if (typeof msg !== "string") msg = "Login failed";
+          if (err) err.textContent = msg;
           return;
         }
+        if (passEl) passEl.value = "";
         hideLogin();
-        if ($("#login-pass")) $("#login-pass").value = "";
-        loadDashboard();
+        await loadDashboard({ silent: true });
         manageDownloadPolling();
       } catch (e) {
         if (err) err.textContent = e.message || "Login failed";
       }
     });
   }
+
 
   ensureAuth().then((ok) => {
     if (ok) manageDownloadPolling();
