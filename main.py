@@ -29,7 +29,7 @@ from .downloader import (
     run_download,
 )
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
-from .parser import enrich as enrich_title, save_release
+from .parser import build_search_queries, enrich as enrich_title, save_release
 from .sources import (
     add_source,
     delete_source,
@@ -143,22 +143,37 @@ async def torznab_api(
     season: int | None = None,
     ep: int | None = None,
 ):
+    """Torznab endpoint for Sonarr/Prowlarr.
+
+    tvsearch runs several query variants (show, SxxExx, Season N, …) against
+    each adapter, indexes hits, then filters by season/episode for Sonarr.
+    """
     require_key(apikey)
     if t == "caps":
         return torznab.caps()
     if t in ("search", "tvsearch"):
+        want_season = season if t == "tvsearch" else None
+        want_ep = ep if t == "tvsearch" else None
+        queries = build_search_queries(q, season=want_season, episode=want_ep)
+        # Always include bare series name first; variants follow
+        if not queries and q:
+            queries = [q.strip()]
+        # Cap variants so we do not hammer upstream sites
+        queries = queries[:4]
         _, adapters = load_sources()
-        for _, adapter in adapters:
-            try:
-                for release in await adapter.search(q):
-                    save_release(release)
-            except Exception:
-                continue
-        return torznab.results(
-            q,
-            season if t == "tvsearch" else None,
-            ep if t == "tvsearch" else None,
-        )
+        seen_urls: set[str] = set()
+        for query in queries:
+            for _, adapter in adapters:
+                try:
+                    for release in await adapter.search(query):
+                        key = (release.url or "") + "|" + (release.title or "")
+                        if key in seen_urls:
+                            continue
+                        seen_urls.add(key)
+                        save_release(release)
+                except Exception:
+                    continue
+        return torznab.results(q, want_season, want_ep)
     raise HTTPException(400, f"Unsupported Torznab function: {t}")
 
 
@@ -175,7 +190,8 @@ async def json_search(request: Request,
         try:
             for release in await adapter.search(q):
                 rid = save_release(release)
-                _s, _e, res, codec, dual = enrich_title(release.title)
+                parsed = enrich_title(release.title)
+                _s, _e, res, codec, dual = parsed[0], parsed[1], parsed[2], parsed[3], parsed[4]
                 saved.append(
                     {
                         "id": rid,
