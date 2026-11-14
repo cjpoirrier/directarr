@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from .db import add_history, connect, ensure_schema
+from .db import add_history, apply_schema, connect, ensure_schema
 
 APP_TYPES = {
     "sonarr": {"label": "Sonarr", "test_path": "/api/v3/system/status", "api_header": "X-Api-Key"},
@@ -29,8 +29,9 @@ def _row_to_dict(row) -> dict[str, Any]:
 
 
 def list_applications() -> list[dict[str, Any]]:
-    ensure_schema()
     with connect() as db:
+        apply_schema(db)
+        db.commit()
         rows = db.execute(
             "SELECT * FROM applications ORDER BY lower(name)"
         ).fetchall()
@@ -38,14 +39,14 @@ def list_applications() -> list[dict[str, Any]]:
 
 
 def get_application(app_id: str) -> dict[str, Any] | None:
-    ensure_schema()
     with connect() as db:
+        apply_schema(db)
+        db.commit()
         row = db.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
 def add_application(data: dict[str, Any]) -> dict[str, Any]:
-    ensure_schema()
     app_type = str(data.get("app_type") or "").strip().lower()
     if app_type not in APP_TYPES:
         raise ValueError(f"Unsupported app_type. Choose one of: {', '.join(APP_TYPES)}")
@@ -63,12 +64,15 @@ def add_application(data: dict[str, Any]) -> dict[str, Any]:
     tags = str(data.get("tags") or "").strip()
     sync_profile_id = data.get("sync_profile_id") or "default"
     app_id = str(uuid.uuid4())
+    # Schema + insert on the SAME connection so CREATE is always visible to INSERT
     with connect() as db:
+        apply_schema(db)
         db.execute(
             "INSERT INTO applications(id,name,app_type,base_url,api_key,sync_level,"
             "sync_profile_id,enabled,tags) VALUES(?,?,?,?,?,?,?,?,?)",
             (app_id, name, app_type, base_url, api_key, sync_level, sync_profile_id, enabled, tags),
         )
+        db.commit()
     add_history("application", f"Added application {name} ({app_type})", base_url)
     return get_application(app_id)  # type: ignore
 
@@ -180,8 +184,9 @@ async def test_application(app_id: str | None = None, data: dict[str, Any] | Non
 
 
 def list_sync_profiles() -> list[dict[str, Any]]:
-    ensure_schema()
     with connect() as db:
+        apply_schema(db)
+        db.commit()
         rows = db.execute("SELECT * FROM sync_profiles ORDER BY lower(name)").fetchall()
     out = []
     for r in rows:

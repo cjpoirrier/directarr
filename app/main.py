@@ -677,6 +677,10 @@ def applications_create(
         return apps_mod.add_application(body.model_dump())
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        import logging
+        logging.getLogger("directarr").exception("applications_create failed")
+        raise HTTPException(500, f"Failed to save application: {e}") from e
 
 
 @app.get("/api/v1/applications/{app_id}")

@@ -1,15 +1,21 @@
+from __future__ import annotations
+
+import logging
 from .config import CONFIG_DIR, DB_PATH
 import sqlite3
+
+log = logging.getLogger("directarr.db")
 
 
 def connect():
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        # Volume may be missing/unwritable on first boot; sqlite will error clearly.
-        pass
-    db = sqlite3.connect(str(DB_PATH), timeout=30)
+    except OSError as e:
+        log.warning("Could not create CONFIG_DIR %s: %s", CONFIG_DIR, e)
+    # check_same_thread=False is safe here; FastAPI runs sync endpoints in a threadpool
+    db = sqlite3.connect(str(DB_PATH), timeout=30, check_same_thread=False)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
     try:
         db.execute("PRAGMA journal_mode=WAL")
     except sqlite3.Error:
@@ -63,6 +69,13 @@ CREATE TABLE IF NOT EXISTS history (
 """
 
 
+def apply_schema(db: sqlite3.Connection) -> None:
+    """Run CREATE TABLE IF NOT EXISTS + migrations on an open connection."""
+    db.executescript(_SCHEMA_SQL)
+    _migrate_downloads(db)
+    _seed_sync_profile(db)
+
+
 def _migrate_downloads(db: sqlite3.Connection) -> None:
     try:
         cols = {row[1] for row in db.execute("PRAGMA table_info(downloads)").fetchall()}
@@ -89,68 +102,59 @@ def _seed_sync_profile(db: sqlite3.Connection) -> None:
                 "enable_interactive_search,minimum_seeders) VALUES(?,?,1,1,1,1)",
                 ("default", "Standard"),
             )
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as e:
+        log.debug("seed sync profile: %s", e)
 
 
-def init_db():
-    """Create tables, run lightweight migrations, seed defaults.
-
-    Steps are isolated so a failed ALTER cannot roll back CREATE TABLE.
-    """
-    # 1) Core schema (own connection / commit)
-    with connect() as db:
-        db.executescript(_SCHEMA_SQL)
-        db.commit()
-
-    # 2) Column migrations (best-effort)
-    with connect() as db:
-        _migrate_downloads(db)
-        db.commit()
-
-    # 3) Seed default sync profile
-    with connect() as db:
-        _seed_sync_profile(db)
-        db.commit()
+def init_db() -> None:
+    """Create tables, run lightweight migrations, seed defaults."""
+    log.info("Initializing database at %s", DB_PATH)
+    try:
+        with connect() as db:
+            apply_schema(db)
+            db.commit()
+    except Exception:
+        log.exception("init_db failed for %s", DB_PATH)
+        raise
 
 
 def ensure_schema() -> None:
-    """Idempotent schema ensure for request paths if startup init was skipped."""
+    """Always apply CREATE IF NOT EXISTS. Raises on hard failure so callers see the cause."""
     try:
         with connect() as db:
-            # Fast path: applications table present
+            apply_schema(db)
+            db.commit()
+            # Verify critical tables exist
             row = db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='applications'"
             ).fetchone()
-            if row:
-                _seed_sync_profile(db)
-                db.commit()
-                return
-        init_db()
-    except Exception:
-        # Last resort — try full init once more without swallowing to caller
-        try:
-            init_db()
-        except Exception:
-            pass
+            if not row:
+                raise RuntimeError(
+                    f"applications table missing after schema apply (db={DB_PATH})"
+                )
+    except Exception as e:
+        log.exception("ensure_schema failed (db=%s)", DB_PATH)
+        raise RuntimeError(
+            f"Database schema unavailable at {DB_PATH}: {e}. "
+            "Check that the config volume is writable (./config → /config)."
+        ) from e
 
 
 def add_history(event_type: str, message: str, details: str | None = None) -> None:
     try:
-        ensure_schema()
         with connect() as db:
+            apply_schema(db)
             db.execute(
                 "INSERT INTO history(event_type, message, details) VALUES(?,?,?)",
                 (event_type, message, details),
             )
-            # Keep history bounded
             db.execute(
                 "DELETE FROM history WHERE id NOT IN "
                 "(SELECT id FROM history ORDER BY id DESC LIMIT 2000)"
             )
             db.commit()
     except Exception:
-        pass
+        log.debug("add_history failed", exc_info=True)
 
 
 def list_history(limit: int = 100, event_type: str | None = None) -> list[dict]:
