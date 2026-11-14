@@ -1,25 +1,89 @@
 from __future__ import annotations
 
 import logging
+import os
+import stat
+from pathlib import Path
+
 from .config import CONFIG_DIR, DB_PATH
 import sqlite3
 
 log = logging.getLogger("directarr.db")
 
 
-def connect():
+def _ensure_writable_dir(path: Path) -> None:
+    """Create dir and best-effort chmod so SQLite can write journal files beside the DB."""
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        log.warning("Could not create CONFIG_DIR %s: %s", CONFIG_DIR, e)
-    # check_same_thread=False is safe here; FastAPI runs sync endpoints in a threadpool
-    db = sqlite3.connect(str(DB_PATH), timeout=30, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
+        log.warning("Could not create %s: %s", path, e)
+        return
     try:
-        db.execute("PRAGMA journal_mode=WAL")
+        mode = path.stat().st_mode
+        os.chmod(path, mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    except OSError:
+        pass
+
+
+def _ensure_writable_file(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        mode = path.stat().st_mode
+        os.chmod(path, mode | stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as e:
+        log.warning("Could not chmod %s: %s", path, e)
+
+
+def connect():
+    _ensure_writable_dir(CONFIG_DIR)
+    _ensure_writable_file(DB_PATH)
+    for suffix in ("-wal", "-shm", "-journal"):
+        _ensure_writable_file(Path(str(DB_PATH) + suffix))
+
+    uri = f"file:{DB_PATH}?mode=rwc"
+    try:
+        db = sqlite3.connect(uri, uri=True, timeout=30, check_same_thread=False)
+    except sqlite3.OperationalError as e:
+        log.warning("URI open failed (%s), retrying plain path %s", e, DB_PATH)
+        try:
+            db = sqlite3.connect(str(DB_PATH), timeout=30, check_same_thread=False)
+        except sqlite3.OperationalError as e2:
+            raise RuntimeError(
+                f"Cannot open database at {DB_PATH}: {e2}. "
+                "Host path ./config must be writable by the container. "
+                "Try: chmod -R a+rwX ./config && docker compose up -d --build"
+            ) from e2
+
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute("PRAGMA foreign_keys=ON")
     except sqlite3.Error:
         pass
+
+    # DELETE journal is more reliable on Docker bind mounts than WAL
+    try:
+        db.execute("PRAGMA journal_mode=DELETE")
+    except sqlite3.Error:
+        pass
+
+    try:
+        db.execute("PRAGMA user_version")
+        db.execute("CREATE TABLE IF NOT EXISTS _directarr_write_check (x INTEGER)")
+        db.execute("DROP TABLE IF EXISTS _directarr_write_check")
+        db.commit()
+    except sqlite3.OperationalError as e:
+        msg = str(e).lower()
+        if "readonly" in msg or "read-only" in msg or "read only" in msg:
+            raise RuntimeError(
+                f"SQLite database is read-only at {DB_PATH}. "
+                "Fix host permissions, then recreate the container:\n"
+                "  chmod -R a+rwX ./config ./downloads ./staging\n"
+                "  docker compose up -d --build\n"
+                f"Underlying error: {e}"
+            ) from e
+        raise
+
     return db
 
 
@@ -124,7 +188,6 @@ def ensure_schema() -> None:
         with connect() as db:
             apply_schema(db)
             db.commit()
-            # Verify critical tables exist
             row = db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='applications'"
             ).fetchone()
@@ -136,7 +199,8 @@ def ensure_schema() -> None:
         log.exception("ensure_schema failed (db=%s)", DB_PATH)
         raise RuntimeError(
             f"Database schema unavailable at {DB_PATH}: {e}. "
-            "Check that the config volume is writable (./config → /config)."
+            "Check that ./config is writable on the host "
+            "(chmod -R a+rwX ./config && docker compose up -d --build)."
         ) from e
 
 
