@@ -1,4 +1,6 @@
 import re
+from datetime import datetime, timezone
+from email.utils import format_datetime
 
 from fastapi.responses import Response
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -39,7 +41,7 @@ def caps():
     )
 
 
-def results(query, season=None, episode=None):
+def results(query, season=None, episode=None, base_url: str = ""):
     """Build Torznab RSS for Sonarr.
 
     Matching rules (tvsearch):
@@ -77,14 +79,26 @@ def results(query, season=None, episode=None):
         if len(matched) >= 100:
             break
 
+    now = format_datetime(datetime.now(timezone.utc))
+
     for row in matched:
         item = SubElement(channel, "item")
         title = row["title"] or ""
+        rid = row["id"]
         SubElement(item, "title").text = title
-        SubElement(item, "guid", isPermaLink="false").text = row["id"]
-        SubElement(item, "link").text = row["url"]
+        SubElement(item, "guid", isPermaLink="false").text = rid
+        # Grab endpoint so Sonarr's download request queues a Directarr job
+        grab_url = f"{base_url.rstrip('/')}/api/v1/grab/{rid}" if base_url else f"/api/v1/grab/{rid}"
+        SubElement(item, "link").text = grab_url
         SubElement(item, "category").text = "Anime"
         SubElement(item, "description").text = "Source: " + (row["source"] or "")
+        SubElement(item, "pubDate").text = now
+
+        size = int(row["size"] or 0)
+        enc = SubElement(item, "enclosure")
+        enc.set("url", grab_url)
+        enc.set("length", str(size if size > 0 else 1))
+        enc.set("type", "application/x-bittorrent")
 
         # Sonarr uses these attrs heavily. For season packs, advertise the
         # requested episode so the result is eligible for that search.
@@ -100,8 +114,8 @@ def results(query, season=None, episode=None):
         elif season is not None and out_season is None:
             out_season = season
 
-        attributes = [("category", "5070")]
-        seen_attr = set()
+        attributes = [("category", "5070"), ("seeders", "1"), ("peers", "1")]
+        seen_attr = set(["category", "seeders", "peers"])
         if out_season is not None:
             attributes.append(("season", str(int(out_season))))
             seen_attr.add("season")

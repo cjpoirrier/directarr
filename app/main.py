@@ -158,6 +158,7 @@ def auth_change_password(
 
 @app.get("/api")
 async def torznab_api(
+    request: Request,
     apikey: str = Query(default=""),
     t: str = "caps",
     q: str = "",
@@ -194,8 +195,40 @@ async def torznab_api(
                         save_release(release)
                 except Exception:
                     continue
-        return torznab.results(q, want_season, want_ep)
+        # Build absolute grab URLs so Sonarr can reach the enclosure
+        base = str(request.base_url).rstrip("/")
+        return torznab.results(q, want_season, want_ep, base_url=base)
     raise HTTPException(400, f"Unsupported Torznab function: {t}")
+
+
+@app.get("/api/v1/grab/{release_id}")
+async def grab_release(
+    release_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    apikey: str = Query(default=""),
+    x_api_key: str | None = Header(default=None),
+):
+    """Torznab grab handoff: queues a Directarr download job when Sonarr fetches the enclosure."""
+    key = apikey or x_api_key or ""
+    require_key(key)
+    with connect() as db:
+        row = db.execute("SELECT * FROM releases WHERE id=?", (release_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Release not found")
+    title = row["title"] or "Unknown"
+    url = row["url"] or ""
+    try:
+        job_id = enqueue(title, url, drive_file_id=None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    background_tasks.add_task(run_download, job_id, title, url, None)
+    add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=title)
+    # Return a minimal response Sonarr accepts as a successful download start
+    return JSONResponse(
+        {"ok": True, "id": job_id, "status": "queued", "title": title},
+        status_code=200,
+    )
 
 
 @app.get("/api/v1/search")
