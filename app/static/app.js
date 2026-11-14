@@ -122,7 +122,8 @@
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
-    
+  }
+
   const loginForm = $("#login-form");
   if (loginForm) {
     loginForm.addEventListener("submit", async (ev) => {
@@ -176,12 +177,9 @@
     });
   }
 
-
-
   ensureAuth().then((ok) => {
     if (ok) manageDownloadPolling();
   });
-  }
 
   function downloadsAreActive(rows) {
     return (rows || []).some((r) => {
