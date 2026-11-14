@@ -20,9 +20,16 @@ from .auth import (
 )
 from .config import set_api_key
 from .db import connect, init_db
-from .downloader import cancel_job, clear_downloads, enqueue, run_download
+from .downloader import (
+    cancel_job,
+    clear_downloads,
+    delete_job_files,
+    enqueue,
+    remove_jobs_from_list,
+    run_download,
+)
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
-from .parser import enrich as enrich_title, save_release
+from .parser import build_search_queries, enrich as enrich_title, save_release
 from .sources import (
     add_source,
     delete_source,
@@ -136,22 +143,37 @@ async def torznab_api(
     season: int | None = None,
     ep: int | None = None,
 ):
+    """Torznab endpoint for Sonarr/Prowlarr.
+
+    tvsearch runs several query variants (show, SxxExx, Season N, …) against
+    each adapter, indexes hits, then filters by season/episode for Sonarr.
+    """
     require_key(apikey)
     if t == "caps":
         return torznab.caps()
     if t in ("search", "tvsearch"):
+        want_season = season if t == "tvsearch" else None
+        want_ep = ep if t == "tvsearch" else None
+        queries = build_search_queries(q, season=want_season, episode=want_ep)
+        # Always include bare series name first; variants follow
+        if not queries and q:
+            queries = [q.strip()]
+        # Cap variants so we do not hammer upstream sites
+        queries = queries[:4]
         _, adapters = load_sources()
-        for _, adapter in adapters:
-            try:
-                for release in await adapter.search(q):
-                    save_release(release)
-            except Exception:
-                continue
-        return torznab.results(
-            q,
-            season if t == "tvsearch" else None,
-            ep if t == "tvsearch" else None,
-        )
+        seen_urls: set[str] = set()
+        for query in queries:
+            for _, adapter in adapters:
+                try:
+                    for release in await adapter.search(query):
+                        key = (release.url or "") + "|" + (release.title or "")
+                        if key in seen_urls:
+                            continue
+                        seen_urls.add(key)
+                        save_release(release)
+                except Exception:
+                    continue
+        return torznab.results(q, want_season, want_ep)
     raise HTTPException(400, f"Unsupported Torznab function: {t}")
 
 
@@ -168,7 +190,8 @@ async def json_search(request: Request,
         try:
             for release in await adapter.search(q):
                 rid = save_release(release)
-                _s, _e, res, codec, dual = enrich_title(release.title)
+                parsed = enrich_title(release.title)
+                _s, _e, res, codec, dual = parsed[0], parsed[1], parsed[2], parsed[3], parsed[4]
                 saved.append(
                     {
                         "id": rid,
@@ -413,6 +436,10 @@ class ClearDownloadsRequest(BaseModel):
     finished_only: bool = True
 
 
+class BulkIdsRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=500)
+
+
 @app.post("/api/v1/downloads/clear")
 def clear_download_list(
     request: Request,
@@ -426,6 +453,34 @@ def clear_download_list(
     return {"ok": True, **result}
 
 
+@app.post("/api/v1/downloads/bulk-remove")
+def bulk_remove_downloads(
+    request: Request,
+    body: BulkIdsRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    """Remove multiple jobs from the list only (does not delete files on disk)."""
+    require_auth(request, x_api_key)
+    if not body.ids:
+        raise HTTPException(400, "ids required")
+    result = remove_jobs_from_list(body.ids)
+    return {"ok": True, **result}
+
+
+@app.post("/api/v1/downloads/delete-files")
+def bulk_delete_download_files(
+    request: Request,
+    body: BulkIdsRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    """Delete physical files for the given jobs. Leaves the list entries in place."""
+    require_auth(request, x_api_key)
+    if not body.ids:
+        raise HTTPException(400, "ids required")
+    result = delete_job_files(body.ids)
+    return {"ok": True, **result}
+
+
 @app.get("/api/v1/settings/security")
 def settings_security(request: Request, x_api_key: str | None = Header(default=None)):
     """Sonarr-style security settings: current API key for Torznab clients."""
@@ -433,6 +488,45 @@ def settings_security(request: Request, x_api_key: str | None = Header(default=N
     return {
         "api_key": config.API_KEY,
         "torznab_path": "/api",
+        "auth_mode": config.AUTH_MODE,
+        "auth_username": config.AUTH_USERNAME,
+    }
+
+
+@app.get("/api/v1/system/status")
+def system_status(request: Request, x_api_key: str | None = Header(default=None)):
+    """Sonarr/Prowlarr-style system status for the System tab."""
+    require_auth(request, x_api_key)
+    import platform
+    import sys
+
+    raw, adapters = load_sources()
+    gstat = gdrive.credentials_status()
+    with connect() as db:
+        releases = db.execute("SELECT COUNT(*) AS c FROM releases").fetchone()["c"]
+        downloads = db.execute("SELECT COUNT(*) AS c FROM downloads").fetchone()["c"]
+        active = db.execute(
+            "SELECT COUNT(*) AS c FROM downloads WHERE status IN ('queued','downloading')"
+        ).fetchone()["c"]
+    return {
+        "app": "Directarr",
+        "version": app.version,
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "auth_mode": config.AUTH_MODE,
+        "config_dir": str(config.CONFIG_DIR),
+        "download_dir": str(config.DOWNLOAD_DIR),
+        "staging_dir": str(config.STAGING_DIR),
+        "max_download_mb": int(config.MAX_DOWNLOAD_BYTES / (1024 * 1024)),
+        "download_connections": config.DOWNLOAD_CONNECTIONS,
+        "indexers_total": len(raw),
+        "indexers_enabled": len(adapters),
+        "releases": releases,
+        "downloads": downloads,
+        "downloads_active": active,
+        "gdrive_authorized": bool(gstat.get("authorized")),
+        "torznab_path": "/api",
+        "health": "ok",
     }
 
 

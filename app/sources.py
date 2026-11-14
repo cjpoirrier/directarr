@@ -31,6 +31,7 @@ ADAPTER_CATALOG: list[dict[str, Any]] = [
         "adapter": "kayoanime",
         "protocol": "direct",
         "privacy": "public",
+        "language": "en-US",
         "categories": ["TV", "Anime"],
         "description": (
             "kayoanime.com — searches posts and extracts Google Drive share links. "
@@ -51,6 +52,7 @@ ADAPTER_CATALOG: list[dict[str, Any]] = [
         "adapter": "generic_html",
         "protocol": "direct",
         "privacy": "public",
+        "language": "en-US",
         "categories": ["TV", "Anime"],
         "description": (
             "www.animekaizen.org — searches posts and extracts a4u/open download links. "
@@ -78,6 +80,7 @@ ADAPTER_CATALOG: list[dict[str, Any]] = [
         "adapter": "generic_html",
         "protocol": "direct",
         "privacy": "public",
+        "language": "en-US",
         "categories": ["TV", "Anime"],
         "description": (
             "Any public HTML listing site. Configure the search URL template and "

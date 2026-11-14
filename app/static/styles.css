@@ -470,3 +470,73 @@ td.actions { white-space: nowrap; }
 @media (max-width: 900px) {
   .indexer-toolbar { flex-direction: column; align-items: stretch; }
 }
+
+/* —— Add Indexer modal (Prowlarr-style) —— */
+.modal-card-wide {
+  width: min(1100px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+.indexer-search-bar { margin: 0.75rem 0; }
+.indexer-search-bar input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+.indexer-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.filter-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+}
+.info-banner {
+  background: rgba(61, 126, 234, 0.15);
+  border: 1px solid rgba(91, 159, 255, 0.35);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin-bottom: 0.85rem;
+}
+.catalog-scroll {
+  flex: 1;
+  min-height: 180px;
+  max-height: 42vh;
+  overflow: auto;
+}
+.catalog-config {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  max-height: 36vh;
+  overflow: auto;
+}
+.catalog-table tr.catalog-row:hover { background: rgba(255,255,255,0.03); }
+
+@media (max-width: 900px) {
+  .indexer-filters { grid-template-columns: 1fr 1fr; }
+  .modal-card-wide { width: 100%; max-height: 95vh; border-radius: 14px 14px 0 0; }
+}
+@media (max-width: 480px) {
+  .indexer-filters { grid-template-columns: 1fr; }
+}

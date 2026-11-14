@@ -126,6 +126,7 @@
       sources: "Indexers",
       gdrive: "Google Drive",
       settings: "Settings",
+      system: "System",
     };
     $("#view-title").textContent = titles[name] || name;
     if (name === "dashboard") loadDashboard({ silent: false });
@@ -134,6 +135,7 @@
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
+    if (name === "system") loadSystemStatus();
     // Restart (or stop) the download poller for the new view
     manageDownloadPolling();
     setMobileNavOpen(false);
@@ -820,38 +822,100 @@
   }
 
   function showAddSourcePanel(show) {
-    const panel = $("#add-source-panel");
-    if (!panel) return;
-    panel.classList.toggle("hidden", !show);
-    if (show) loadAdapterCatalog();
-  }
-
-  async function loadAdapterCatalog() {
-    try {
-      adapterCatalog = await api("/api/v1/adapters");
-      const el = $("#adapter-catalog");
+    const modal = $("#add-indexer-modal");
+    if (!modal) return;
+    modal.classList.toggle("hidden", !show);
+    if (show) {
       const form = $("#adapter-settings-form");
       if (form) {
         form.classList.add("hidden");
         form.innerHTML = "";
       }
-      el.innerHTML = `<table class="indexer-table">
-        <thead><tr><th>Indexer</th><th>Protocol</th><th>Description</th><th></th></tr></thead>
-        <tbody>
-          ${adapterCatalog
-            .map(
-              (a) => `<tr>
+      const search = $("#catalog-search");
+      if (search) search.value = "";
+      loadAdapterCatalog();
+    }
+  }
+
+  function catalogFilterValues() {
+    return {
+      q: (($("#catalog-search") && $("#catalog-search").value) || "").trim().toLowerCase(),
+      protocol: (($("#catalog-filter-protocol") && $("#catalog-filter-protocol").value) || "").toLowerCase(),
+      language: (($("#catalog-filter-language") && $("#catalog-filter-language").value) || "").toLowerCase(),
+      privacy: (($("#catalog-filter-privacy") && $("#catalog-filter-privacy").value) || "").toLowerCase(),
+      category: (($("#catalog-filter-category") && $("#catalog-filter-category").value) || "").toLowerCase(),
+    };
+  }
+
+  function filterCatalog(rows) {
+    const f = catalogFilterValues();
+    return (rows || []).filter((a) => {
+      if (f.protocol && (a.protocol || "direct").toLowerCase() !== f.protocol) return false;
+      if (f.language && (a.language || "en-US").toLowerCase() !== f.language) return false;
+      if (f.privacy && (a.privacy || "public").toLowerCase() !== f.privacy) return false;
+      if (f.category) {
+        const cats = (a.categories || []).map((c) => String(c).toLowerCase());
+        if (!cats.includes(f.category)) return false;
+      }
+      if (f.q) {
+        const hay = `${a.name || ""} ${a.adapter || ""} ${a.description || ""}`.toLowerCase();
+        if (!hay.includes(f.q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderCatalogTable(rows) {
+    const el = $("#adapter-catalog");
+    if (!el) return;
+    const list = filterCatalog(rows);
+    const count = $("#catalog-count");
+    if (count) count.textContent = `${list.length} indexer(s) available`;
+    if (!list.length) {
+      el.innerHTML = `<p class="muted">No indexers match your filters.</p>`;
+      return;
+    }
+    el.innerHTML = `<table class="indexer-table catalog-table">
+      <thead><tr>
+        <th>Protocol</th><th>Name</th><th>Language</th><th>Description</th><th>Privacy</th><th>Categories</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${list
+          .map((a) => {
+            const proto = (a.protocol || "direct").toLowerCase();
+            const priv = (a.privacy || "public").toLowerCase();
+            return `<tr class="catalog-row" data-adapter-id="${esc(a.id)}" style="cursor:pointer">
+            <td><span class="proto-pill ${esc(proto)}">${esc(proto)}</span></td>
             <td><strong>${esc(a.name)}</strong><div class="hint"><code>${esc(a.adapter)}</code></div></td>
-            <td><span class="proto-pill ${esc((a.protocol || "direct").toLowerCase())}">${esc(a.protocol || "direct")}</span></td>
+            <td class="muted">${esc(a.language || "en-US")}</td>
             <td class="muted">${esc(a.description || "")}</td>
-            <td class="actions"><button class="btn sm primary" data-adapter-id="${esc(a.id)}">Configure</button></td>
-          </tr>`
-            )
-            .join("")}
-        </tbody></table>`;
-      el.querySelectorAll("[data-adapter-id]").forEach((btn) => {
-        btn.addEventListener("click", () => openAdapterSettings(btn.dataset.adapterId));
+            <td><span class="privacy-pill ${esc(priv)}">${esc(priv)}</span></td>
+            <td>${categoryPills(a.categories)}</td>
+            <td class="actions"><button class="btn sm primary" data-adapter-id="${esc(a.id)}">Select</button></td>
+          </tr>`;
+          })
+          .join("")}
+      </tbody></table>`;
+    el.querySelectorAll("[data-adapter-id]").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openAdapterSettings(btn.dataset.adapterId);
       });
+    });
+    el.querySelectorAll("tr.catalog-row").forEach((row) => {
+      row.addEventListener("click", () => openAdapterSettings(row.dataset.adapterId));
+    });
+  }
+
+  async function loadAdapterCatalog() {
+    try {
+      adapterCatalog = await api("/api/v1/adapters");
+      const form = $("#adapter-settings-form");
+      if (form) {
+        form.classList.add("hidden");
+        form.innerHTML = "";
+      }
+      renderCatalogTable(adapterCatalog);
     } catch (e) {
       toast(e.message, true);
     }
@@ -865,6 +929,7 @@
     form.classList.remove("hidden");
     form.innerHTML = `
       <h3 style="margin:0 0 0.75rem">Configure ${esc(entry.name)}</h3>
+      <p class="hint">${esc(entry.description || "")}</p>
       <form id="adapter-config-form">
         ${fields
           .map((f) => {
@@ -887,8 +952,17 @@
           .join("")}
         <div class="row" style="margin-top:1rem">
           <button class="btn primary" type="submit">Add & enable</button>
+          <button class="btn" type="button" id="cfg-back-catalog">Back to list</button>
         </div>
       </form>`;
+    form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const back = $("#cfg-back-catalog");
+    if (back) {
+      back.addEventListener("click", () => {
+        form.classList.add("hidden");
+        form.innerHTML = "";
+      });
+    }
     $("#adapter-config-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const settings = {};
@@ -910,6 +984,47 @@
         toast(e.message, true);
       }
     });
+  }
+
+  async function loadSystemStatus() {
+    const el = $("#system-status");
+    const healthEl = $("#system-health");
+    if (!el) return;
+    try {
+      const st = await api("/api/v1/system/status");
+      const rows = [
+        ["App", `${st.app || "Directarr"} ${st.version || ""}`],
+        ["Health", st.health || "ok"],
+        ["Python", st.python || "—"],
+        ["Platform", st.platform || "—"],
+        ["Auth mode", st.auth_mode || "—"],
+        ["Indexers", `${st.indexers_enabled || 0} enabled / ${st.indexers_total || 0} total`],
+        ["Releases indexed", String(st.releases ?? "—")],
+        ["Downloads", `${st.downloads_active || 0} active / ${st.downloads || 0} total`],
+        ["Google Drive", st.gdrive_authorized ? "Authorized" : "Not authorized"],
+        ["Config dir", st.config_dir || "—"],
+        ["Download dir", st.download_dir || "—"],
+        ["Staging dir", st.staging_dir || "—"],
+        ["Max download", `${st.max_download_mb || "—"} MB`],
+        ["HTTP connections", String(st.download_connections ?? "—")],
+        ["Torznab", st.torznab_path || "/api"],
+      ];
+      el.innerHTML = rows
+        .map(
+          ([label, val]) =>
+            `<div class="settings-label">${esc(label)}</div><div class="settings-field"><code>${esc(val)}</code></div>`
+        )
+        .join("");
+      if (healthEl) {
+        healthEl.innerHTML =
+          st.health === "ok"
+            ? `<span class="pill ok">Healthy</span> · Directarr is responding`
+            : `<span class="pill err">${esc(st.health || "unknown")}</span>`;
+      }
+    } catch (e) {
+      if (el) el.innerHTML = `<div class="muted">${esc(e.message)}</div>`;
+      if (healthEl) healthEl.textContent = e.message;
+    }
   }
 
   async function loadGdrive() {
@@ -936,6 +1051,12 @@
       if (urlEl) {
         urlEl.textContent = `${host}${data.torznab_path || "/api"}?apikey=${key || "YOUR_KEY"}`;
       }
+      const authMode = $("#settings-auth-mode");
+      if (authMode) authMode.textContent = data.auth_mode || "forms";
+      const authUser = $("#settings-auth-user");
+      if (authUser) authUser.textContent = data.auth_username || "admin";
+      const listen = $("#settings-listen");
+      if (listen) listen.textContent = `${location.hostname || "0.0.0.0"}:${location.port || "8787"}`;
       if (key) localStorage.setItem(KEY, key);
     } catch (e) {
       toast(e.message, true);
@@ -1259,8 +1380,26 @@
 
   const addSourceBtn = $("#add-source-btn");
   if (addSourceBtn) addSourceBtn.addEventListener("click", () => showAddSourcePanel(true));
-  const addSourceCancel = $("#add-source-cancel");
-  if (addSourceCancel) addSourceCancel.addEventListener("click", () => showAddSourcePanel(false));
+  ["#add-indexer-close", "#add-indexer-close-2"].forEach((sel) => {
+    const btn = $(sel);
+    if (btn) btn.addEventListener("click", () => showAddSourcePanel(false));
+  });
+  const addIndexerModal = $("#add-indexer-modal");
+  if (addIndexerModal) {
+    addIndexerModal.addEventListener("click", (ev) => {
+      if (ev.target === addIndexerModal) showAddSourcePanel(false);
+    });
+  }
+  ["catalog-search", "catalog-filter-protocol", "catalog-filter-language", "catalog-filter-privacy", "catalog-filter-category"].forEach(
+    (id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("input", () => renderCatalogTable(adapterCatalog));
+      el.addEventListener("change", () => renderCatalogTable(adapterCatalog));
+    }
+  );
+  const refreshSystem = $("#refresh-system");
+  if (refreshSystem) refreshSystem.addEventListener("click", () => loadSystemStatus());
 
   $("#gdrive-auth-url").addEventListener("click", async () => {
     try {

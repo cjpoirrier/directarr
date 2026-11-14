@@ -44,6 +44,7 @@
         <button class="nav-btn" data-view="sources">Indexers</button>
         <button class="nav-btn" data-view="gdrive">Google Drive</button>
         <button class="nav-btn" data-view="settings">Settings</button>
+        <button class="nav-btn" data-view="system">System</button>
       </nav>
       <div class="sidebar-foot">
         <span id="conn-status" class="pill muted">API key required</span>
@@ -139,22 +140,13 @@
               <span id="indexer-stats" class="hint">Indexers 0 · Enabled 0</span>
             </div>
           </div>
-          <p class="hint">Prowlarr-style sources: add an indexer, enable it for Search &amp; Sonarr Torznab, disable to pause without deleting.</p>
+          <p class="hint">Manage direct-download indexers like Prowlarr. Enable for Search &amp; Sonarr Torznab.</p>
           <div id="sources-table" class="table-wrap"></div>
           <div class="indexer-legend row" style="margin-top:0.75rem;gap:1rem">
             <span class="legend-item"><span class="status-dot ok"></span> Enabled</span>
             <span class="legend-item"><span class="status-dot muted"></span> Disabled</span>
             <span class="legend-item"><span class="proto-pill direct">direct</span> Direct download</span>
           </div>
-        </div>
-        <div class="panel hidden" id="add-source-panel">
-          <div class="row between">
-            <h2>Add Indexer</h2>
-            <button class="btn sm" id="add-source-cancel" type="button">Cancel</button>
-          </div>
-          <p class="hint">Choose a preset (like Prowlarr’s indexer list), then configure and save.</p>
-          <div id="adapter-catalog" class="table-wrap"></div>
-          <div id="adapter-settings-form" class="hidden" style="margin-top:1rem"></div>
         </div>
       </section>
 
@@ -181,8 +173,32 @@
 
       <section id="view-settings" class="view">
         <div class="panel">
+          <h2>Host</h2>
+          <div class="settings-grid">
+            <div class="settings-label">Listen</div>
+            <div class="settings-field">
+              <code id="settings-listen">0.0.0.0:8787</code>
+              <p class="hint">Configured via Docker / uvicorn. Restart the container to change port.</p>
+            </div>
+            <div class="settings-label">URL Base</div>
+            <div class="settings-field">
+              <code id="settings-url-base">/</code>
+              <p class="hint">Path prefix when behind a reverse proxy (not configurable in UI yet).</p>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
           <h2>Security</h2>
           <div class="settings-grid">
+            <div class="settings-label">Authentication</div>
+            <div class="settings-field">
+              <code id="settings-auth-mode">forms</code>
+              <p class="hint">Set <code>DIRECTARR_AUTH_MODE</code> to <code>forms</code> or <code>none</code>. Username via <code>DIRECTARR_AUTH_USERNAME</code>.</p>
+            </div>
+            <div class="settings-label">Username</div>
+            <div class="settings-field">
+              <code id="settings-auth-user">admin</code>
+            </div>
             <div class="settings-label">API Key</div>
             <div class="settings-field">
               <div class="api-key-row">
@@ -190,9 +206,13 @@
                 <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
                 <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
               </div>
-              <p class="hint">Used by Sonarr/Radarr Torznab indexers. Regenerating invalidates the old key immediately.</p>
+              <p class="hint">Used by Sonarr/Radarr as the Torznab API key. Regenerating invalidates the old key immediately.</p>
             </div>
-
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Indexers (Torznab)</h2>
+          <div class="settings-grid">
             <div class="settings-label">Torznab URL</div>
             <div class="settings-field">
               <div class="api-key-row">
@@ -200,12 +220,86 @@
                 <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
                 <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
               </div>
-              <p class="hint">Paste this into Sonarr as a Torznab indexer. API docs: <a href="/docs" target="_blank">/docs</a></p>
+              <p class="hint">In Sonarr: Settings → Indexers → Add → Torznab. Paste this URL and the API key above.</p>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>UI</h2>
+          <div class="settings-grid">
+            <div class="settings-label">Theme</div>
+            <div class="settings-field">
+              <p class="hint">Dark theme (matches Sonarr / Prowlarr). More options later.</p>
             </div>
           </div>
         </div>
       </section>
+
+      <section id="view-system" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Status</h2>
+            <button class="btn" id="refresh-system" type="button">Refresh</button>
+          </div>
+          <div id="system-status" class="settings-grid" style="margin-top:0.75rem"></div>
+        </div>
+        <div class="panel">
+          <h2>Health</h2>
+          <div id="system-health" class="muted">Loading…</div>
+        </div>
+      </section>
+
     </main>
+  </div>
+
+
+  <div id="add-indexer-modal" class="modal hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="row between">
+        <h2>Add Indexer</h2>
+        <button type="button" class="btn sm" id="add-indexer-close">✕</button>
+      </div>
+      <div class="indexer-search-bar">
+        <input id="catalog-search" type="search" placeholder="Search indexers" />
+      </div>
+      <div class="indexer-filters row">
+        <label class="filter-field">Protocol
+          <select id="catalog-filter-protocol">
+            <option value="">All</option>
+            <option value="direct">direct</option>
+          </select>
+        </label>
+        <label class="filter-field">Language
+          <select id="catalog-filter-language">
+            <option value="">All</option>
+            <option value="en-US">en-US</option>
+          </select>
+        </label>
+        <label class="filter-field">Privacy
+          <select id="catalog-filter-privacy">
+            <option value="">All</option>
+            <option value="public">Public</option>
+            <option value="private">Private</option>
+          </select>
+        </label>
+        <label class="filter-field">Categories
+          <select id="catalog-filter-category">
+            <option value="">All</option>
+            <option value="TV">TV</option>
+            <option value="Anime">Anime</option>
+          </select>
+        </label>
+      </div>
+      <div class="info-banner">
+        Directarr ships preset direct-download indexers (anime DDL sites). Pick one below, configure, and enable it for Search and Sonarr Torznab. You can also use Generic HTML for any public listing site.
+      </div>
+      <div id="adapter-catalog" class="table-wrap catalog-scroll"></div>
+      <div id="adapter-settings-form" class="hidden catalog-config"></div>
+      <div class="row between" style="margin-top:0.75rem">
+        <span id="catalog-count" class="hint">0 indexer(s) available</span>
+        <button type="button" class="btn" id="add-indexer-close-2">Close</button>
+      </div>
+    </div>
   </div>
 
   <div id="queue-modal" class="modal hidden">
