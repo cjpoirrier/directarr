@@ -3,8 +3,12 @@ import sqlite3
 
 
 def connect():
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Volume may be missing/unwritable on first boot; sqlite will error clearly.
+        pass
+    db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
     return db
 
@@ -28,3 +32,7 @@ def init_db():
         cols = {row[1] for row in db.execute("PRAGMA table_info(downloads)").fetchall()}
         if "drive_file_id" not in cols:
             db.execute("ALTER TABLE downloads ADD COLUMN drive_file_id TEXT")
+        if "size_bytes" not in cols:
+            db.execute("ALTER TABLE downloads ADD COLUMN size_bytes INTEGER")
+        if "bytes_done" not in cols:
+            db.execute("ALTER TABLE downloads ADD COLUMN bytes_done INTEGER")

@@ -54,7 +54,16 @@ if STATIC_DIR.is_dir():
 
 @app.on_event("startup")
 def startup():
-    init_db()
+    # Do not take the whole process down if the config volume is not writable yet;
+    # /health must still answer so Docker does not mark the container unhealthy forever.
+    try:
+        init_db()
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("directarr").exception(
+            "Database init failed (check ./config permissions): %s", exc
+        )
 
 
 def require_key(key):
