@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from .db import add_history, connect
+from .db import add_history, connect, ensure_schema
 
 APP_TYPES = {
     "sonarr": {"label": "Sonarr", "test_path": "/api/v3/system/status", "api_header": "X-Api-Key"},
@@ -29,20 +29,23 @@ def _row_to_dict(row) -> dict[str, Any]:
 
 
 def list_applications() -> list[dict[str, Any]]:
+    ensure_schema()
     with connect() as db:
         rows = db.execute(
-            "SELECT * FROM applications ORDER BY name COLLATE NOCASE"
+            "SELECT * FROM applications ORDER BY lower(name)"
         ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
 def get_application(app_id: str) -> dict[str, Any] | None:
+    ensure_schema()
     with connect() as db:
         row = db.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
 def add_application(data: dict[str, Any]) -> dict[str, Any]:
+    ensure_schema()
     app_type = str(data.get("app_type") or "").strip().lower()
     if app_type not in APP_TYPES:
         raise ValueError(f"Unsupported app_type. Choose one of: {', '.join(APP_TYPES)}")
@@ -71,6 +74,7 @@ def add_application(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_application(app_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    ensure_schema()
     existing = get_application(app_id)
     if not existing:
         raise KeyError("Application not found")
@@ -107,6 +111,7 @@ def update_application(app_id: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def delete_application(app_id: str) -> bool:
+    ensure_schema()
     existing = get_application(app_id)
     if not existing:
         return False
@@ -175,8 +180,9 @@ async def test_application(app_id: str | None = None, data: dict[str, Any] | Non
 
 
 def list_sync_profiles() -> list[dict[str, Any]]:
+    ensure_schema()
     with connect() as db:
-        rows = db.execute("SELECT * FROM sync_profiles ORDER BY name COLLATE NOCASE").fetchall()
+        rows = db.execute("SELECT * FROM sync_profiles ORDER BY lower(name)").fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -188,6 +194,7 @@ def list_sync_profiles() -> list[dict[str, Any]]:
 
 
 def upsert_sync_profile(data: dict[str, Any], profile_id: str | None = None) -> dict[str, Any]:
+    ensure_schema()
     name = str(data.get("name") or "").strip()
     if not name:
         raise ValueError("name is required")
@@ -221,6 +228,7 @@ def upsert_sync_profile(data: dict[str, Any], profile_id: str | None = None) -> 
 
 
 def delete_sync_profile(profile_id: str) -> bool:
+    ensure_schema()
     if profile_id == "default":
         raise ValueError("Cannot delete the default sync profile")
     with connect() as db:

@@ -20,7 +20,7 @@ from .auth import (
 )
 from .config import set_api_key
 from . import applications as apps_mod
-from .db import add_history, connect, init_db, list_history
+from .db import add_history, connect, ensure_schema, init_db, list_history
 from .downloader import (
     cancel_job,
     clear_downloads,
@@ -66,6 +66,16 @@ def startup():
         logging.getLogger("directarr").exception(
             "Database init failed (check ./config permissions): %s", exc
         )
+        # Retry once after a short delay in case the volume was not ready.
+        try:
+            import time
+
+            time.sleep(0.5)
+            init_db()
+        except Exception as exc2:
+            logging.getLogger("directarr").exception(
+                "Database init retry failed: %s", exc2
+            )
 
 
 def require_key(key):
@@ -813,6 +823,7 @@ def history_list(
 @app.delete("/api/v1/history")
 def history_clear(request: Request, x_api_key: str | None = Header(default=None)):
     require_auth(request, x_api_key)
+    ensure_schema()
     with connect() as db:
         db.execute("DELETE FROM history")
     add_history("system", "History cleared")
