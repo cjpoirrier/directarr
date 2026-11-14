@@ -41,6 +41,7 @@
         <button class="nav-btn" data-view="search">Search</button>
         <button class="nav-btn" data-view="releases">Releases</button>
         <button class="nav-btn" data-view="downloads">Downloads</button>
+        <button class="nav-btn" data-view="stats">Stats</button>
         <button class="nav-btn" data-view="sources">Indexers</button>
         <button class="nav-btn" data-view="gdrive">Google Drive</button>
         <button class="nav-btn" data-view="settings">Settings</button>
@@ -172,66 +173,170 @@
       </section>
 
       <section id="view-settings" class="view">
-        <div class="panel">
-          <h2>Host</h2>
-          <div class="settings-grid">
-            <div class="settings-label">Listen</div>
-            <div class="settings-field">
-              <code id="settings-listen">0.0.0.0:8787</code>
-              <p class="hint">Configured via Docker / uvicorn. Restart the container to change port.</p>
-            </div>
-            <div class="settings-label">URL Base</div>
-            <div class="settings-field">
-              <code id="settings-url-base">/</code>
-              <p class="hint">Path prefix when behind a reverse proxy (not configurable in UI yet).</p>
-            </div>
-          </div>
-        </div>
-        <div class="panel">
-          <h2>Security</h2>
-          <div class="settings-grid">
-            <div class="settings-label">Authentication</div>
-            <div class="settings-field">
-              <code id="settings-auth-mode">forms</code>
-              <p class="hint">Set <code>DIRECTARR_AUTH_MODE</code> to <code>forms</code> or <code>none</code>. Username via <code>DIRECTARR_AUTH_USERNAME</code>.</p>
-            </div>
-            <div class="settings-label">Username</div>
-            <div class="settings-field">
-              <code id="settings-auth-user">admin</code>
-            </div>
-            <div class="settings-label">API Key</div>
-            <div class="settings-field">
-              <div class="api-key-row">
-                <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
-                <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
-                <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+        <div class="settings-layout">
+          <aside class="settings-nav" id="settings-nav">
+            <button type="button" class="settings-tab active" data-settings-tab="general">General</button>
+            <button type="button" class="settings-tab" data-settings-tab="ui">UI</button>
+            <button type="button" class="settings-tab" data-settings-tab="notifications">Notifications</button>
+            <button type="button" class="settings-tab" data-settings-tab="tags">Tags</button>
+          </aside>
+          <div class="settings-panels">
+            <!-- General (Host + Security) -->
+            <div class="settings-panel active" id="settings-panel-general">
+              <div class="panel">
+                <h2>Host</h2>
+                <div class="settings-grid">
+                  <div class="settings-label">Port Number</div>
+                  <div class="settings-field">
+                    <code id="settings-listen">0.0.0.0:8787</code>
+                    <p class="hint">Configured via Docker / uvicorn. Restart the container to change port.</p>
+                  </div>
+                  <div class="settings-label">URL Base</div>
+                  <div class="settings-field">
+                    <code id="settings-url-base">/</code>
+                    <p class="hint">Path prefix when behind a reverse proxy (not configurable in UI yet).</p>
+                  </div>
+                </div>
               </div>
-              <p class="hint">Used by Sonarr/Radarr as the Torznab API key. Regenerating invalidates the old key immediately.</p>
-            </div>
-          </div>
-        </div>
-        <div class="panel">
-          <h2>Indexers (Torznab)</h2>
-          <div class="settings-grid">
-            <div class="settings-label">Torznab URL</div>
-            <div class="settings-field">
-              <div class="api-key-row">
-                <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
-                <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
-                <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+              <div class="panel">
+                <h2>Security</h2>
+                <div class="settings-grid">
+                  <div class="settings-label">Authentication</div>
+                  <div class="settings-field">
+                    <code id="settings-auth-mode">forms</code>
+                    <p class="hint">Set <code>DIRECTARR_AUTH_MODE</code> to <code>forms</code> or <code>none</code>. Username via <code>DIRECTARR_AUTH_USERNAME</code>.</p>
+                  </div>
+                  <div class="settings-label">Authentication Required</div>
+                  <div class="settings-field">
+                    <code id="settings-auth-required">Enabled</code>
+                    <p class="hint">When auth mode is forms, the web UI requires login. Local network bypass is not implemented yet.</p>
+                  </div>
+                  <div class="settings-label">Username</div>
+                  <div class="settings-field">
+                    <code id="settings-auth-user">admin</code>
+                  </div>
+                  <div class="settings-label">API Key</div>
+                  <div class="settings-field">
+                    <div class="api-key-row">
+                      <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
+                      <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
+                      <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+                    </div>
+                    <p class="hint">Used by Sonarr/Radarr as the Torznab API key. Regenerating invalidates the old key immediately. Requires restart only if the key is also set via environment.</p>
+                  </div>
+                  <div class="settings-label">Certificate Validation</div>
+                  <div class="settings-field">
+                    <code>Enabled</code>
+                    <p class="hint">HTTPS certificate validation for outbound requests. Do not disable unless you understand the risks.</p>
+                  </div>
+                </div>
               </div>
-              <p class="hint">In Sonarr: Settings → Indexers → Add → Torznab. Paste this URL and the API key above.</p>
+              <div class="panel">
+                <h2>Indexers (Torznab)</h2>
+                <div class="settings-grid">
+                  <div class="settings-label">Torznab URL</div>
+                  <div class="settings-field">
+                    <div class="api-key-row">
+                      <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
+                      <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
+                      <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+                    </div>
+                    <p class="hint">In Sonarr: Settings → Indexers → Add → Torznab. Paste this URL and the API key above.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- UI -->
+            <div class="settings-panel" id="settings-panel-ui">
+              <div class="panel">
+                <h2>UI</h2>
+                <div class="settings-grid">
+                  <div class="settings-label">Theme</div>
+                  <div class="settings-field">
+                    <select id="settings-theme" disabled>
+                      <option value="dark" selected>Dark (Sonarr / Prowlarr style)</option>
+                      <option value="light">Light (coming soon)</option>
+                    </select>
+                    <p class="hint">Dark theme matches Sonarr and Prowlarr. Additional themes planned.</p>
+                  </div>
+                  <div class="settings-label">First Day of Week</div>
+                  <div class="settings-field">
+                    <select id="settings-first-day" disabled>
+                      <option value="sunday">Sunday</option>
+                      <option value="monday" selected>Monday</option>
+                    </select>
+                    <p class="hint">Used by calendar views when added.</p>
+                  </div>
+                  <div class="settings-label">Short Date Format</div>
+                  <div class="settings-field">
+                    <code>YYYY-MM-DD</code>
+                  </div>
+                  <div class="settings-label">Long Date Format</div>
+                  <div class="settings-field">
+                    <code>dddd, MMMM D YYYY</code>
+                  </div>
+                  <div class="settings-label">Time Format</div>
+                  <div class="settings-field">
+                    <code>24h</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Notifications -->
+            <div class="settings-panel" id="settings-panel-notifications">
+              <div class="panel">
+                <div class="row between">
+                  <h2>Notifications</h2>
+                  <button type="button" class="btn primary" id="add-notification-btn" disabled>+ Add</button>
+                </div>
+                <p class="hint">Connect Discord, Telegram, email, or webhooks when downloads complete or fail. Notification providers are not wired yet — this tab is ready for future integrations.</p>
+                <div id="notifications-list" class="empty-state">
+                  <p class="muted">No notification connections configured.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tags -->
+            <div class="settings-panel" id="settings-panel-tags">
+              <div class="panel">
+                <div class="row between">
+                  <h2>Tags</h2>
+                  <button type="button" class="btn primary" id="add-tag-btn" disabled>+ Add</button>
+                </div>
+                <p class="hint">Tags can group indexers, notification rules, and download profiles (Sonarr-style). Tag management will be available in a later release.</p>
+                <div id="tags-list" class="empty-state">
+                  <p class="muted">No tags defined.</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+      </section>
+
+      <section id="view-stats" class="view">
+        <div class="cards" id="stats-summary-cards">
+          <div class="card"><h3>Total downloads</h3><p id="stats-total-dl">—</p></div>
+          <div class="card"><h3>Completed</h3><p id="stats-completed">—</p></div>
+          <div class="card"><h3>Failed / cancelled</h3><p id="stats-failed">—</p></div>
+          <div class="card"><h3>Indexed releases</h3><p id="stats-releases">—</p></div>
+        </div>
         <div class="panel">
-          <h2>UI</h2>
-          <div class="settings-grid">
-            <div class="settings-label">Theme</div>
-            <div class="settings-field">
-              <p class="hint">Dark theme (matches Sonarr / Prowlarr). More options later.</p>
-            </div>
+          <div class="row between">
+            <h2>Downloads by status</h2>
+            <button type="button" class="btn" id="refresh-stats">Refresh</button>
           </div>
+          <div id="stats-by-status" class="table-wrap"></div>
+        </div>
+        <div class="panel">
+          <h2>Releases by indexer (source)</h2>
+          <p class="hint">Where indexed results come from. Useful to see which DDL indexers are contributing the most.</p>
+          <div id="stats-by-source" class="table-wrap"></div>
+        </div>
+        <div class="panel">
+          <h2>Recent download activity</h2>
+          <div id="stats-recent" class="table-wrap"></div>
         </div>
       </section>
 

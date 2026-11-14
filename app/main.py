@@ -502,6 +502,44 @@ def settings_security(request: Request, x_api_key: str | None = Header(default=N
     }
 
 
+@app.get("/api/v1/stats")
+def stats_overview(request: Request, x_api_key: str | None = Header(default=None)):
+    """Aggregate download and release stats for the Stats page."""
+    require_auth(request, x_api_key)
+    with connect() as db:
+        downloads_total = db.execute("SELECT COUNT(*) AS c FROM downloads").fetchone()["c"]
+        releases_total = db.execute("SELECT COUNT(*) AS c FROM releases").fetchone()["c"]
+        status_rows = db.execute(
+            "SELECT status, COUNT(*) AS c FROM downloads GROUP BY status"
+        ).fetchall()
+        source_rows = db.execute(
+            "SELECT source, COUNT(*) AS c FROM releases GROUP BY source ORDER BY c DESC LIMIT 50"
+        ).fetchall()
+        recent = db.execute(
+            "SELECT id, title, status, created_at FROM downloads ORDER BY created_at DESC LIMIT 25"
+        ).fetchall()
+    downloads_by_status = {str(r["status"] or "unknown"): int(r["c"]) for r in status_rows}
+    releases_by_source = [
+        {"source": str(r["source"] or "unknown"), "count": int(r["c"])} for r in source_rows
+    ]
+    recent_downloads = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "status": r["status"],
+            "created_at": r["created_at"],
+        }
+        for r in recent
+    ]
+    return {
+        "downloads_total": int(downloads_total),
+        "releases_total": int(releases_total),
+        "downloads_by_status": downloads_by_status,
+        "releases_by_source": releases_by_source,
+        "recent_downloads": recent_downloads,
+    }
+
+
 @app.get("/api/v1/system/status")
 def system_status(request: Request, x_api_key: str | None = Header(default=None)):
     """Sonarr/Prowlarr-style system status for the System tab."""

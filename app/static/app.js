@@ -123,6 +123,7 @@
       search: "Search",
       releases: "Releases",
       downloads: "Downloads",
+      stats: "Stats",
       sources: "Indexers",
       gdrive: "Google Drive",
       settings: "Settings",
@@ -132,6 +133,7 @@
     if (name === "dashboard") loadDashboard({ silent: false });
     if (name === "releases") loadReleases();
     if (name === "downloads") loadDownloads({ silent: false });
+    if (name === "stats") loadStats();
     if (name === "sources") loadSources();
     if (name === "gdrive") loadGdrive();
     if (name === "settings") updateSettings();
@@ -139,6 +141,11 @@
     // Restart (or stop) the download poller for the new view
     manageDownloadPolling();
     setMobileNavOpen(false);
+  }
+
+  function setSettingsTab(tab) {
+    $$(".settings-tab").forEach((b) => b.classList.toggle("active", b.dataset.settingsTab === tab));
+    $$(".settings-panel").forEach((p) => p.classList.toggle("active", p.id === `settings-panel-${tab}`));
   }
 
   const loginForm = $("#login-form");
@@ -1053,11 +1060,100 @@
       }
       const authMode = $("#settings-auth-mode");
       if (authMode) authMode.textContent = data.auth_mode || "forms";
+      const authRequired = $("#settings-auth-required");
+      if (authRequired) {
+        const mode = (data.auth_mode || "forms").toLowerCase();
+        authRequired.textContent = mode === "none" ? "Disabled" : "Enabled";
+      }
       const authUser = $("#settings-auth-user");
       if (authUser) authUser.textContent = data.auth_username || "admin";
       const listen = $("#settings-listen");
       if (listen) listen.textContent = `${location.hostname || "0.0.0.0"}:${location.port || "8787"}`;
       if (key) localStorage.setItem(KEY, key);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  async function loadStats() {
+    try {
+      const data = await api("/api/v1/stats");
+      const byStatus = data.downloads_by_status || {};
+      const total = data.downloads_total ?? 0;
+      const completed = byStatus.completed || 0;
+      const failed = (byStatus.failed || 0) + (byStatus.cancelled || 0);
+      const setText = (id, val) => {
+        const el = $(id);
+        if (el) el.textContent = String(val);
+      };
+      setText("#stats-total-dl", total);
+      setText("#stats-completed", completed);
+      setText("#stats-failed", failed);
+      setText("#stats-releases", data.releases_total ?? 0);
+
+      const statusOrder = ["completed", "downloading", "queued", "failed", "cancelled"];
+      const statusRows = statusOrder
+        .filter((s) => (byStatus[s] || 0) > 0 || s === "completed")
+        .concat(Object.keys(byStatus).filter((s) => !statusOrder.includes(s)))
+        .filter((s, i, arr) => arr.indexOf(s) === i);
+      const maxStatus = Math.max(1, ...statusRows.map((s) => byStatus[s] || 0));
+      const statusCls = (s) => {
+        if (s === "completed") return "ok";
+        if (s === "failed" || s === "cancelled") return "err";
+        if (s === "downloading" || s === "queued") return "warn";
+        return "";
+      };
+      const statusHtml = statusRows.length
+        ? statusRows
+            .map((s) => {
+              const n = byStatus[s] || 0;
+              const pct = Math.round((n / maxStatus) * 100);
+              return `<div class="stat-bar-row">
+                <span>${esc(s)}</span>
+                <div class="stat-bar-track"><div class="stat-bar-fill ${statusCls(s)}" style="width:${pct}%"></div></div>
+                <span class="muted">${n}</span>
+              </div>`;
+            })
+            .join("")
+        : `<p class="muted">No download jobs yet.</p>`;
+      const byStatusEl = $("#stats-by-status");
+      if (byStatusEl) byStatusEl.innerHTML = statusHtml;
+
+      const sources = data.releases_by_source || [];
+      const maxSrc = Math.max(1, ...sources.map((r) => r.count || 0));
+      const srcHtml = sources.length
+        ? `<table><thead><tr><th>Indexer / source</th><th>Releases</th><th></th></tr></thead><tbody>` +
+          sources
+            .map((r) => {
+              const pct = Math.round(((r.count || 0) / maxSrc) * 100);
+              return `<tr>
+                <td>${esc(r.source || "unknown")}</td>
+                <td>${r.count || 0}</td>
+                <td style="min-width:120px"><div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div></td>
+              </tr>`;
+            })
+            .join("") +
+          `</tbody></table>`
+        : `<p class="muted">No indexed releases yet. Run a search to populate sources.</p>`;
+      const bySourceEl = $("#stats-by-source");
+      if (bySourceEl) bySourceEl.innerHTML = srcHtml;
+
+      const recent = data.recent_downloads || [];
+      const recentHtml = recent.length
+        ? `<table><thead><tr><th>Title</th><th>Status</th><th>When</th></tr></thead><tbody>` +
+          recent
+            .map(
+              (d) => `<tr>
+              <td>${esc(d.title || "—")}</td>
+              <td>${statusPill(d.status)}</td>
+              <td class="muted">${esc(d.created_at || "—")}</td>
+            </tr>`
+            )
+            .join("") +
+          `</tbody></table>`
+        : `<p class="muted">No recent downloads.</p>`;
+      const recentEl = $("#stats-recent");
+      if (recentEl) recentEl.innerHTML = recentHtml;
     } catch (e) {
       toast(e.message, true);
     }
@@ -1074,6 +1170,19 @@
 
   // Navigation
   $$(".nav-btn").forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view)));
+
+  // Settings sub-tabs
+  $$(".settings-tab").forEach((btn) => {
+    btn.addEventListener("click", () => setSettingsTab(btn.dataset.settingsTab));
+  });
+
+  const refreshStatsBtn = $("#refresh-stats");
+  if (refreshStatsBtn) {
+    refreshStatsBtn.addEventListener("click", () => {
+      loadStats();
+      toast("Stats refreshed");
+    });
+  }
 
   ["#menu-toggle", "#topbar-menu"].forEach((sel) => {
     const btn = $(sel);

@@ -540,3 +540,110 @@ td.actions { white-space: nowrap; }
 @media (max-width: 480px) {
   .indexer-filters { grid-template-columns: 1fr; }
 }
+
+/* —— Settings tabs (Sonarr-style) —— */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+  position: sticky;
+  top: 4.5rem;
+}
+.settings-tab {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  text-align: left;
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.92rem;
+  min-height: 40px;
+}
+.settings-tab:hover { background: var(--bg3); color: var(--text); }
+.settings-tab.active {
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.settings-panels { min-width: 0; }
+.settings-panel { display: none; }
+.settings-panel.active { display: block; }
+.settings-panel .panel + .panel { margin-top: 1rem; }
+.empty-state {
+  margin-top: 1rem;
+  padding: 1.5rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+.settings-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  min-width: 220px;
+}
+
+/* Stats bars */
+.stat-bar-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 56px;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.stat-bar-row:last-child { border-bottom: 0; }
+.stat-bar-track {
+  height: 8px;
+  background: var(--bg3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.stat-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent2), var(--accent));
+  border-radius: 4px;
+  min-width: 2px;
+}
+.stat-bar-fill.ok { background: linear-gradient(90deg, #2a9d6a, var(--ok)); }
+.stat-bar-fill.err { background: linear-gradient(90deg, #a01a45, var(--err)); }
+.stat-bar-fill.warn { background: linear-gradient(90deg, #c47d12, var(--warn)); }
+
+@media (max-width: 900px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    position: static;
+    gap: 0.35rem;
+  }
+  .settings-tab {
+    flex: 1 1 auto;
+    text-align: center;
+    box-shadow: none !important;
+  }
+  .settings-tab.active {
+    background: var(--accent2);
+    color: #fff;
+  }
+  .stat-bar-row {
+    grid-template-columns: 100px 1fr 48px;
+  }
+}
