@@ -207,26 +207,31 @@ async def grab_release(
     background_tasks: BackgroundTasks,
     request: Request,
     apikey: str = Query(default=""),
+    drive_file_id: str = Query(default=""),
+    title: str = Query(default=""),
     x_api_key: str | None = Header(default=None),
 ):
-    """Torznab grab handoff: queues a Directarr download job when Sonarr fetches the enclosure."""
+    """Torznab grab handoff: queues a Directarr download job when Sonarr fetches the enclosure.
+
+    Optional drive_file_id + title select a single resolved file from a Drive folder.
+    """
     key = apikey or x_api_key or ""
     require_key(key)
     with connect() as db:
         row = db.execute("SELECT * FROM releases WHERE id=?", (release_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Release not found")
-    title = row["title"] or "Unknown"
+    job_title = (title or row["title"] or "Unknown").strip()
     url = row["url"] or ""
+    fid = (drive_file_id or "").strip() or None
     try:
-        job_id = enqueue(title, url, drive_file_id=None)
+        job_id = enqueue(job_title, url, drive_file_id=fid)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    background_tasks.add_task(run_download, job_id, title, url, None)
-    add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=title)
-    # Return a minimal response Sonarr accepts as a successful download start
+    background_tasks.add_task(run_download, job_id, job_title, url, fid)
+    add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=job_title)
     return JSONResponse(
-        {"ok": True, "id": job_id, "status": "queued", "title": title},
+        {"ok": True, "id": job_id, "status": "queued", "title": job_title, "drive_file_id": fid},
         status_code=200,
     )
 

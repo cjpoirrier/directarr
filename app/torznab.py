@@ -6,7 +6,7 @@ from fastapi.responses import Response
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from .db import connect
-from .parser import episode_matches_row, title_matches_query
+from .parser import enrich, episode_matches_row, title_matches_query
 
 NS = "http://torznab.com/schemas/2015/feed"
 
@@ -41,13 +41,66 @@ def caps():
     )
 
 
+def _file_matches(name: str, want_season, want_episode) -> bool:
+    """True if a resolved Drive filename matches the requested S/E."""
+    if want_season is None and want_episode is None:
+        return True
+    s, e, _, _, _, _ = enrich(name or "")
+    if want_season is not None and want_episode is not None:
+        if s == want_season and e == want_episode:
+            return True
+        # also accept title-only episode tags
+        return episode_matches_row(
+            row_season=s,
+            row_episode=e,
+            title=name or "",
+            want_season=want_season,
+            want_episode=want_episode,
+            allow_season_pack=False,
+        )
+    if want_season is not None:
+        return s == want_season
+    if want_episode is not None:
+        return e == want_episode
+    return True
+
+
+def _try_resolve_files(url: str):
+    """Return list of {name, id, size, url} from a Drive share, or empty list."""
+    try:
+        from . import gdrive
+        if not gdrive.is_drive_url(url):
+            return []
+        status = gdrive.credentials_status()
+        if not status.get("authorized"):
+            return []
+        resolved = gdrive.resolve_url(url, recursive=True)
+        files = resolved.get("files") or []
+        out = []
+        for f in files:
+            if getattr(f, "is_folder", False):
+                continue
+            name = getattr(f, "name", "") or ""
+            fid = getattr(f, "id", "") or ""
+            size = getattr(f, "size", None)
+            if name and fid:
+                out.append({
+                    "name": name,
+                    "id": fid,
+                    "size": int(size) if size else 0,
+                    "url": url,
+                })
+        return out
+    except Exception:
+        return []
+
+
 def results(query, season=None, episode=None, base_url: str = ""):
     """Build Torznab RSS for Sonarr.
 
-    Matching rules (tvsearch):
-    - Title must loosely match the series query
-    - Episode must match S/E, or be a season pack for that season
-    - Season packs are tagged with the requested S/E so Sonarr accepts them
+    Episode-specific searches resolve Drive folders and emit only the matching
+    individual files (real sizes). Packs are returned only when no specific
+    episode was requested, or as a fallback if resolution finds nothing.
     """
     root = Element("rss", version="2.0")
     root.set("xmlns:torznab", NS)
@@ -59,16 +112,17 @@ def results(query, season=None, episode=None, base_url: str = ""):
     with connect() as db:
         rows = db.execute(sql).fetchall()
 
+    episode_search = season is not None and episode is not None
     matched = []
     for row in rows:
         title = row["title"] or ""
         if not title_matches_query(title, query):
             continue
-        row_season = row["season"]
-        row_episode = row["episode"]
+        # For episode searches allow packs as candidates so we can resolve them;
+        # for other searches use normal matching.
         if not episode_matches_row(
-            row_season=row_season,
-            row_episode=row_episode,
+            row_season=row["season"],
+            row_episode=row["episode"],
             title=title,
             want_season=season,
             want_episode=episode,
@@ -76,32 +130,88 @@ def results(query, season=None, episode=None, base_url: str = ""):
         ):
             continue
         matched.append(row)
-        if len(matched) >= 100:
+        if len(matched) >= 40:  # keep resolve budget reasonable
             break
 
     now = format_datetime(datetime.now(timezone.utc))
+    items_emitted = 0
+    seen_file_ids = set()
 
     for row in matched:
-        item = SubElement(channel, "item")
         title = row["title"] or ""
         rid = row["id"]
+        url = row["url"] or ""
+        source = row["source"] or ""
+
+        # Episode search: prefer resolved individual files
+        resolved_files = []
+        if episode_search:
+            resolved_files = [
+                f for f in _try_resolve_files(url)
+                if _file_matches(f["name"], season, episode)
+            ]
+
+        if resolved_files:
+            for f in resolved_files:
+                if f["id"] in seen_file_ids:
+                    continue
+                seen_file_ids.add(f["id"])
+                grab_url = (
+                    f"{base_url.rstrip('/')}/api/v1/grab/{rid}"
+                    f"?drive_file_id={f['id']}&title={f['name']}"
+                    if base_url
+                    else f"/api/v1/grab/{rid}?drive_file_id={f['id']}&title={f['name']}"
+                )
+                item = SubElement(channel, "item")
+                SubElement(item, "title").text = f["name"]
+                SubElement(item, "guid", isPermaLink="false").text = f"{rid}:{f['id']}"
+                SubElement(item, "link").text = grab_url
+                SubElement(item, "category").text = "Anime"
+                SubElement(item, "description").text = f"Source: {source} (resolved file)"
+                SubElement(item, "pubDate").text = now
+                enc = SubElement(item, "enclosure")
+                enc.set("url", grab_url)
+                enc.set("length", str(f["size"] if f["size"] > 0 else 1))
+                enc.set("type", "application/x-bittorrent")
+                attrs = [
+                    ("category", "5070"),
+                    ("seeders", "1"),
+                    ("peers", "1"),
+                    ("season", str(int(season))),
+                    ("episode", str(int(episode))),
+                ]
+                if f["size"] > 0:
+                    attrs.append(("size", str(f["size"])))
+                for name, value in attrs:
+                    SubElement(item, f"{{{NS}}}attr", name=name, value=value)
+                items_emitted += 1
+                if items_emitted >= 100:
+                    break
+            if items_emitted >= 100:
+                break
+            continue  # do not also emit the pack when we have individual files
+
+        # No resolved files (or not an episode search): emit the release itself
+        # Only skip pure packs on episode searches when we already emitted files
+        # for other candidates; still emit if nothing else matched.
+        if episode_search and items_emitted > 0:
+            # We already have concrete episode files; skip remaining packs
+            continue
+
+        grab_url = f"{base_url.rstrip('/')}/api/v1/grab/{rid}" if base_url else f"/api/v1/grab/{rid}"
+        item = SubElement(channel, "item")
         SubElement(item, "title").text = title
         SubElement(item, "guid", isPermaLink="false").text = rid
-        # Grab endpoint so Sonarr's download request queues a Directarr job
-        grab_url = f"{base_url.rstrip('/')}/api/v1/grab/{rid}" if base_url else f"/api/v1/grab/{rid}"
         SubElement(item, "link").text = grab_url
         SubElement(item, "category").text = "Anime"
-        SubElement(item, "description").text = "Source: " + (row["source"] or "")
+        SubElement(item, "description").text = "Source: " + source
         SubElement(item, "pubDate").text = now
-
         size = int(row["size"] or 0)
         enc = SubElement(item, "enclosure")
         enc.set("url", grab_url)
         enc.set("length", str(size if size > 0 else 1))
         enc.set("type", "application/x-bittorrent")
 
-        # Sonarr uses these attrs heavily. For season packs, advertise the
-        # requested episode so the result is eligible for that search.
         out_season = row["season"]
         out_episode = row["episode"]
         if season is not None and episode is not None:
@@ -115,7 +225,7 @@ def results(query, season=None, episode=None, base_url: str = ""):
             out_season = season
 
         attributes = [("category", "5070"), ("seeders", "1"), ("peers", "1")]
-        seen_attr = set(["category", "seeders", "peers"])
+        seen_attr = {"category", "seeders", "peers"}
         if out_season is not None:
             attributes.append(("season", str(int(out_season))))
             seen_attr.add("season")
@@ -128,6 +238,10 @@ def results(query, season=None, episode=None, base_url: str = ""):
                 seen_attr.add(key)
         for name, value in attributes:
             SubElement(item, f"{{{NS}}}attr", name=name, value=value)
+        items_emitted += 1
+        if items_emitted >= 100:
+            break
+
     return Response(
         tostring(root, encoding="utf-8", xml_declaration=True),
         media_type="application/rss+xml",
