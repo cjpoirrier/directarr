@@ -23,12 +23,35 @@ ADAPTERS: dict[str, type] = {
     "example_html": ExampleHtmlAdapter,  # alias
 }
 
-# Catalog shown in "Add source" UI (like Prowlarr's indexer list)
+# Catalog shown in "Add indexer" UI (Prowlarr-style)
 ADAPTER_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": "kayoanime",
+        "name": "KayoAnime",
+        "adapter": "kayoanime",
+        "protocol": "direct",
+        "privacy": "public",
+        "categories": ["TV", "Anime"],
+        "description": (
+            "kayoanime.com — searches posts and extracts Google Drive share links. "
+            "Requires your Google account for Drive downloads."
+        ),
+        "settings": [
+            {"name": "name", "label": "Display name", "type": "string", "default": "KayoAnime", "required": True},
+            {"name": "base_url", "label": "Base URL", "type": "url", "default": "https://kayoanime.com", "required": True},
+            {"name": "follow_posts", "label": "Open posts and extract Drive links", "type": "boolean", "default": True, "required": False},
+            {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": False},
+            {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": False},
+            {"name": "priority", "label": "Priority (lower = preferred)", "type": "number", "default": 25, "required": False},
+        ],
+    },
     {
         "id": "animekaizen",
         "name": "AnimeKaizen",
         "adapter": "generic_html",
+        "protocol": "direct",
+        "privacy": "public",
+        "categories": ["TV", "Anime"],
         "description": (
             "www.animekaizen.org — searches posts and extracts a4u/open download links. "
             "Enable Follow posts so results are real download URLs, not empty HTML pages."
@@ -46,12 +69,16 @@ ADAPTER_CATALOG: list[dict[str, Any]] = [
             {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": False},
             {"name": "max_results", "label": "Max search results", "type": "number", "default": 25, "required": False},
             {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": False},
+            {"name": "priority", "label": "Priority (lower = preferred)", "type": "number", "default": 25, "required": False},
         ],
     },
     {
         "id": "generic_html",
         "name": "Generic HTML site",
         "adapter": "generic_html",
+        "protocol": "direct",
+        "privacy": "public",
+        "categories": ["TV", "Anime"],
         "description": (
             "Any public HTML listing site. Configure the search URL template and "
             "CSS selectors. Turn on Follow posts so search returns download links "
@@ -72,6 +99,7 @@ ADAPTER_CATALOG: list[dict[str, Any]] = [
             {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": False},
             {"name": "max_results", "label": "Max search results", "type": "number", "default": 25, "required": False},
             {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": False},
+            {"name": "priority", "label": "Priority (lower = preferred)", "type": "number", "default": 25, "required": False},
         ],
     },
 ]
@@ -228,14 +256,35 @@ def update_source_settings(source_id: str, settings: dict[str, Any]) -> dict[str
     return _public_source(found)
 
 
+def _catalog_meta_for(adapter: str | None) -> dict[str, Any]:
+    for entry in ADAPTER_CATALOG:
+        if entry.get("adapter") == adapter or entry.get("id") == adapter:
+            return entry
+    return {}
+
+
 def _public_source(s: dict[str, Any]) -> dict[str, Any]:
+    meta = _catalog_meta_for(s.get("adapter"))
+    priority = s.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 25
+    except (TypeError, ValueError):
+        priority = 25
     return {
         "id": s.get("id"),
         "name": s.get("name"),
         "enabled": bool(s.get("enabled", False)),
         "adapter": s.get("adapter"),
         "base_url": s.get("base_url"),
-        "settings": {k: v for k, v in s.items() if k not in {"id", "adapter", "enabled"}},
+        "priority": priority,
+        "protocol": meta.get("protocol") or "direct",
+        "privacy": meta.get("privacy") or "public",
+        "categories": list(meta.get("categories") or ["TV", "Anime"]),
+        "settings": {
+            k: v
+            for k, v in s.items()
+            if k not in {"id", "adapter", "enabled"}
+        },
     }
 
 

@@ -123,7 +123,7 @@
       search: "Search",
       releases: "Releases",
       downloads: "Downloads",
-      sources: "Sources",
+      sources: "Indexers",
       gdrive: "Google Drive",
       settings: "Settings",
     };
@@ -636,61 +636,96 @@
 
   let adapterCatalog = [];
 
+  function categoryPills(cats) {
+    const list = Array.isArray(cats) && cats.length ? cats : ["TV", "Anime"];
+    return list.map((c) => `<span class="cat-pill">${esc(c)}</span>`).join(" ");
+  }
+
   async function loadSources() {
     try {
       const rows = await api("/api/v1/sources");
+      const enabledCount = (rows || []).filter((s) => s.enabled).length;
+      const stats = $("#indexer-stats");
+      if (stats) {
+        stats.textContent = `Indexers ${rows.length} · Enabled ${enabledCount}`;
+      }
       if (!rows.length) {
-        $("#sources-table").innerHTML = `<p class="muted">No sources installed. Click <strong>Add source</strong> to pick an adapter.</p>`;
+        $("#sources-table").innerHTML = `<p class="muted">No indexers yet. Click <strong>+ Add Indexer</strong> to install one from the catalog.</p>`;
         return;
       }
-      $("#sources-table").innerHTML = `<table>
-        <thead><tr><th>Name</th><th>Adapter</th><th>URL</th><th>Status</th><th></th></tr></thead>
+      // Sort: enabled first, then priority asc, then name
+      const sorted = [...rows].sort((a, b) => {
+        if (!!b.enabled !== !!a.enabled) return a.enabled ? -1 : 1;
+        const pa = Number(a.priority) || 25;
+        const pb = Number(b.priority) || 25;
+        if (pa !== pb) return pa - pb;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      });
+      $("#sources-table").innerHTML = `<table class="indexer-table">
+        <thead><tr>
+          <th style="width:2.5rem"></th>
+          <th>Indexer Name</th>
+          <th>Protocol</th>
+          <th>Privacy</th>
+          <th>Priority</th>
+          <th>Categories</th>
+          <th>Enabled</th>
+          <th></th>
+        </tr></thead>
         <tbody>
-          ${rows
-            .map(
-              (s) => `<tr>
-            <td>${esc(s.name)}</td>
-            <td><code>${esc(s.adapter)}</code></td>
-            <td class="title muted">${esc(s.base_url || "")}</td>
-            <td>${
-              s.enabled
-                ? '<span class="pill ok">enabled</span>'
-                : '<span class="pill muted">disabled</span>'
-            }</td>
+          ${sorted
+            .map((s) => {
+              const priv = (s.privacy || "public").toLowerCase();
+              const proto = (s.protocol || "direct").toLowerCase();
+              return `<tr class="${s.enabled ? "indexer-row-on" : "indexer-row-off"}">
+            <td><span class="status-dot ${s.enabled ? "ok" : "muted"}" title="${s.enabled ? "Enabled" : "Disabled"}"></span></td>
+            <td>
+              <strong>${esc(s.name || s.id)}</strong>
+              <div class="hint"><code>${esc(s.adapter || "")}</code>${s.base_url ? ` · ${esc(s.base_url)}` : ""}</div>
+            </td>
+            <td><span class="proto-pill ${esc(proto)}">${esc(proto)}</span></td>
+            <td><span class="privacy-pill ${esc(priv)}">${esc(priv)}</span></td>
+            <td>${esc(String(s.priority != null ? s.priority : 25))}</td>
+            <td>${categoryPills(s.categories)}</td>
+            <td>
+              <label class="switch" title="Enable / disable">
+                <input type="checkbox" class="src-enable" data-toggle-id="${esc(s.id)}" ${s.enabled ? "checked" : ""} />
+                <span class="slider"></span>
+              </label>
+            </td>
             <td class="actions">
               <button class="btn sm" data-edit-id="${esc(s.id)}">Edit</button>
-              <button class="btn sm" data-toggle-id="${esc(s.id)}" data-enabled="${s.enabled ? "1" : "0"}">
-                ${s.enabled ? "Disable" : "Enable"}
-              </button>
               <button class="btn sm danger" data-delete-id="${esc(s.id)}">Remove</button>
             </td>
-          </tr>`
-            )
+          </tr>`;
+            })
             .join("")}
         </tbody></table>`;
-      $("#sources-table").querySelectorAll("[data-toggle-id]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
+      $("#sources-table").querySelectorAll(".src-enable").forEach((el) => {
+        el.addEventListener("change", async () => {
+          const id = el.dataset.toggleId;
+          const next = !!el.checked;
           try {
-            const next = btn.dataset.enabled !== "1";
-            await api(`/api/v1/sources/${encodeURIComponent(btn.dataset.toggleId)}`, {
+            await api(`/api/v1/sources/${encodeURIComponent(id)}`, {
               method: "PATCH",
               body: { enabled: next },
             });
-            toast(next ? "Source enabled" : "Source disabled");
+            toast(next ? "Indexer enabled" : "Indexer disabled");
             loadSources();
           } catch (e) {
             toast(e.message, true);
+            el.checked = !next;
           }
         });
       });
       $("#sources-table").querySelectorAll("[data-delete-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          if (!confirm("Remove this source?")) return;
+          if (!confirm("Remove this indexer? This does not delete downloaded files.")) return;
           try {
             await api(`/api/v1/sources/${encodeURIComponent(btn.dataset.deleteId)}`, {
               method: "DELETE",
             });
-            toast("Source removed");
+            toast("Indexer removed");
             loadSources();
           } catch (e) {
             toast(e.message, true);
@@ -772,7 +807,7 @@
             method: "PATCH",
             body: { settings },
           });
-          toast("Source updated");
+          toast("Indexer updated");
           showAddSourcePanel(false);
           loadSources();
         } catch (e) {
@@ -800,13 +835,14 @@
         form.classList.add("hidden");
         form.innerHTML = "";
       }
-      el.innerHTML = `<table>
-        <thead><tr><th>Adapter</th><th>Description</th><th></th></tr></thead>
+      el.innerHTML = `<table class="indexer-table">
+        <thead><tr><th>Indexer</th><th>Protocol</th><th>Description</th><th></th></tr></thead>
         <tbody>
           ${adapterCatalog
             .map(
               (a) => `<tr>
             <td><strong>${esc(a.name)}</strong><div class="hint"><code>${esc(a.adapter)}</code></div></td>
+            <td><span class="proto-pill ${esc((a.protocol || "direct").toLowerCase())}">${esc(a.protocol || "direct")}</span></td>
             <td class="muted">${esc(a.description || "")}</td>
             <td class="actions"><button class="btn sm primary" data-adapter-id="${esc(a.id)}">Configure</button></td>
           </tr>`

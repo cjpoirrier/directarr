@@ -41,7 +41,7 @@
         <button class="nav-btn" data-view="search">Search</button>
         <button class="nav-btn" data-view="releases">Releases</button>
         <button class="nav-btn" data-view="downloads">Downloads</button>
-        <button class="nav-btn" data-view="sources">Sources</button>
+        <button class="nav-btn" data-view="sources">Indexers</button>
         <button class="nav-btn" data-view="gdrive">Google Drive</button>
         <button class="nav-btn" data-view="settings">Settings</button>
       </nav>
@@ -130,21 +130,29 @@
 
       <section id="view-sources" class="view">
         <div class="panel">
-          <div class="row between">
-            <h2>Installed sources</h2>
+          <div class="indexer-toolbar row between">
             <div class="row">
-              <button class="btn primary" id="add-source-btn" type="button">Add source</button>
-              <button class="btn" id="reload-sources" type="button">Reload</button>
+              <button class="btn primary" id="add-source-btn" type="button">+ Add Indexer</button>
+              <button class="btn" id="reload-sources" type="button">Sync / Reload</button>
+            </div>
+            <div class="row">
+              <span id="indexer-stats" class="hint">Indexers 0 · Enabled 0</span>
             </div>
           </div>
-          <p class="hint">Sources are like Prowlarr indexers: pick an adapter, set its options, then enable it for Search.</p>
+          <p class="hint">Prowlarr-style sources: add an indexer, enable it for Search &amp; Sonarr Torznab, disable to pause without deleting.</p>
           <div id="sources-table" class="table-wrap"></div>
+          <div class="indexer-legend row" style="margin-top:0.75rem;gap:1rem">
+            <span class="legend-item"><span class="status-dot ok"></span> Enabled</span>
+            <span class="legend-item"><span class="status-dot muted"></span> Disabled</span>
+            <span class="legend-item"><span class="proto-pill direct">direct</span> Direct download</span>
+          </div>
         </div>
         <div class="panel hidden" id="add-source-panel">
           <div class="row between">
-            <h2>Add source</h2>
+            <h2>Add Indexer</h2>
             <button class="btn sm" id="add-source-cancel" type="button">Cancel</button>
           </div>
+          <p class="hint">Choose a preset (like Prowlarr’s indexer list), then configure and save.</p>
           <div id="adapter-catalog" class="table-wrap"></div>
           <div id="adapter-settings-form" class="hidden" style="margin-top:1rem"></div>
         </div>

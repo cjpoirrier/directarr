@@ -417,3 +417,56 @@ td.actions { white-space: nowrap; }
 #app-shell[hidden] {
   display: none !important;
 }
+
+/* —— Prowlarr-style indexers —— */
+.indexer-toolbar { margin-bottom: 0.85rem; }
+.indexer-table th { white-space: nowrap; }
+.indexer-row-off { opacity: 0.72; }
+.status-dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--border); vertical-align: middle;
+}
+.status-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(61, 214, 140, 0.2); }
+.status-dot.muted { background: #5a6270; }
+
+.proto-pill, .privacy-pill, .cat-pill {
+  display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+  font-size: 0.72rem; font-weight: 600; text-transform: lowercase;
+  border: 1px solid var(--border);
+}
+.proto-pill.direct { background: #1e3a2f; color: #3dd68c; border-color: #245c42; }
+.proto-pill.torrent { background: #1e3a2a; color: #6ee7a8; border-color: #2d6b4a; }
+.privacy-pill.public { background: #3a1f2a; color: #f87171; border-color: #6b1f3a; }
+.privacy-pill.private { background: #1e2a3a; color: #7db3ff; border-color: #2a4a6b; }
+.privacy-pill.semi-private { background: #3a3218; color: #f5a524; border-color: #6b4e1a; }
+.cat-pill {
+  background: #3a2a18; color: #f0a050; border-color: #6b4a20;
+  margin: 0 0.15rem 0.15rem 0; text-transform: none;
+}
+
+.switch {
+  position: relative; display: inline-block; width: 42px; height: 24px;
+  vertical-align: middle;
+}
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 999px;
+  transition: 0.15s;
+}
+.slider::before {
+  position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+  background: var(--muted); border-radius: 50%; transition: 0.15s;
+}
+.switch input:checked + .slider {
+  background: rgba(61, 214, 140, 0.25); border-color: #245c42;
+}
+.switch input:checked + .slider::before {
+  transform: translateX(18px); background: var(--ok);
+}
+
+.legend-item { color: var(--muted); font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.35rem; }
+
+@media (max-width: 900px) {
+  .indexer-toolbar { flex-direction: column; align-items: stretch; }
+}
