@@ -44,6 +44,7 @@
     }
     if (!res.ok) {
       if (res.status === 401 && path.indexOf("/api/v1/auth/") !== 0) {
+        try { localStorage.removeItem(KEY); } catch (e) {}
         showLogin();
       }
       let msg = data && data.detail ? data.detail : text;
@@ -130,34 +131,51 @@
       if (err) err.textContent = "";
       const userEl = $("#login-user");
       const passEl = $("#login-pass");
+      const username = (userEl && userEl.value.trim()) || "";
+      const password = (passEl && passEl.value) || "";
+      if (!username || !password) {
+        if (err) err.textContent = "Enter username and password";
+        return;
+      }
       try {
+        // Do not send a stale X-Api-Key during login
+        try { localStorage.removeItem(KEY); } catch (e) {}
         const res = await fetch("/api/v1/auth/login", {
           method: "POST",
           credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: (userEl && userEl.value.trim()) || "",
-            password: (passEl && passEl.value) || "",
-          }),
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ username, password }),
         });
         const text = await res.text();
         let data = null;
-        try { data = text ? JSON.parse(text) : null; } catch {}
+        try { data = text ? JSON.parse(text) : null; } catch (e) {}
         if (!res.ok) {
-          let msg = (data && data.detail) || "Invalid username or password";
-          if (typeof msg !== "string") msg = "Login failed";
+          let msg = "Invalid username or password";
+          if (data && data.detail) {
+            msg = typeof data.detail === "string" ? data.detail : "Login failed";
+          }
           if (err) err.textContent = msg;
           return;
         }
         if (passEl) passEl.value = "";
+        // Confirm cookie session before showing app
+        const stRes = await fetch("/api/v1/auth/status", { credentials: "same-origin" });
+        const st = await stRes.json();
+        if (!st.authenticated) {
+          if (err) err.textContent = "Login saved but session cookie was blocked. Check browser privacy settings.";
+          return;
+        }
         hideLogin();
-        await loadDashboard({ silent: true });
+        try {
+          await loadDashboard({ silent: true });
+        } catch (e) {}
         manageDownloadPolling();
       } catch (e) {
         if (err) err.textContent = e.message || "Login failed";
       }
     });
   }
+
 
 
   ensureAuth().then((ok) => {

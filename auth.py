@@ -64,11 +64,11 @@ def get_password_hash() -> str:
     try:
         if path.is_file():
             stored = path.read_text(encoding="utf-8").strip()
-            if stored:
+            if stored.startswith("pbkdf2_sha256$"):
                 return stored
     except OSError:
         pass
-    hashed = hash_password(config.AUTH_PASSWORD)
+    hashed = hash_password(config.AUTH_PASSWORD or "admin")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(hashed + "\n", encoding="utf-8")
@@ -91,7 +91,7 @@ def auth_mode() -> str:
 
 
 def username() -> str:
-    return config.AUTH_USERNAME or "admin"
+    return (config.AUTH_USERNAME or "admin").strip() or "admin"
 
 
 def create_session_token(user: str) -> str:
@@ -131,14 +131,35 @@ def session_user(request: Request) -> str | None:
     return read_session_token(token)
 
 
-def check_password_login(user: str, password: str) -> bool:
-    expected = username()
-    # compare_digest requires equal length
-    if len(user) != len(expected) or not hmac.compare_digest(user, expected):
-        # still run a dummy hash to reduce timing leaks a bit
-        verify_password(password, get_password_hash())
+def _safe_str_eq(a: str, b: str) -> bool:
+    if len(a) != len(b):
         return False
-    return verify_password(password, get_password_hash())
+    return hmac.compare_digest(a, b)
+
+
+def check_password_login(user: str, password: str) -> bool:
+    expected_user = username()
+    if not _safe_str_eq(user, expected_user):
+        return False
+    stored = get_password_hash()
+    if verify_password(password, stored):
+        return True
+    # Env fallback: if operator set DIRECTARR_AUTH_PASSWORD and hash is stale, accept + rehash
+    env_pw = config.AUTH_PASSWORD or ""
+    if env_pw and password == env_pw:
+        try:
+            set_password(password)
+        except OSError:
+            pass
+        return True
+    return False
+
+
+def _api_key_ok(key: str | None) -> bool:
+    if not key:
+        return False
+    expected = config.API_KEY or ""
+    return _safe_str_eq(key, expected)
 
 
 def require_auth(
@@ -148,7 +169,7 @@ def require_auth(
     """Allow valid session cookie OR API key. AUTH_MODE=none skips checks."""
     if auth_mode() == "none":
         return
-    if x_api_key and hmac.compare_digest(x_api_key, config.API_KEY):
+    if _api_key_ok(x_api_key):
         return
     if session_user(request):
         return

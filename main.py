@@ -89,11 +89,15 @@ class LoginRequest(BaseModel):
 def auth_login(body: LoginRequest):
     if auth_mode() == "none":
         return {"ok": True, "user": auth_username(), "mode": "none"}
-    user = body.username.strip()
-    if not check_password_login(user, body.password):
+    user = (body.username or "").strip()
+    password = body.password or ""
+    if not user or not password:
+        raise HTTPException(400, "Username and password are required")
+    if not check_password_login(user, password):
         raise HTTPException(401, "Invalid username or password")
     token = create_session_token(user)
-    resp = JSONResponse({"ok": True, "user": user})
+    resp = JSONResponse({"ok": True, "user": user, "mode": auth_mode()})
+    # Path=/ so cookie is sent to /api/v1/* and /
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=token,
