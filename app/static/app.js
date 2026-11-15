@@ -1974,7 +1974,7 @@
     try {
       const res = await api("/api/v1/streams/detect", {
         method: "POST",
-        body: JSON.stringify({ url }),
+        body: { url },
       });
       if (pre && res.log) {
         pre.textContent = (res.log || []).join("\n") || "(no steps returned)";
@@ -2013,7 +2013,7 @@
           try {
             await api("/api/v1/streams/download", {
               method: "POST",
-              body: JSON.stringify({ title: sTitle, url: sUrl }),
+              body: { title: sTitle, url: sUrl },
             });
             btn.textContent = "Queued";
             if (status) status.textContent = "Queued. Check Downloads.";
