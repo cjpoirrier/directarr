@@ -197,7 +197,7 @@ async def torznab_api(
                     continue
         # Build absolute grab URLs so Sonarr can reach the enclosure
         base = str(request.base_url).rstrip("/")
-        return torznab.results(q, want_season, want_ep, base_url=base, api_key=apikey)
+        return torznab.results(q, want_season, want_ep, base_url=base)
     raise HTTPException(400, f"Unsupported Torznab function: {t}")
 
 
@@ -233,19 +233,27 @@ async def grab_release(
     background_tasks.add_task(run_download, job_id, job_title, url, fid)
     add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=job_title)
 
-    # Minimal but structurally valid .torrent so Blackhole accepts the write.
-    # Directarr has already queued the real download above.
-    name_bytes = job_title.encode("utf-8", errors="replace")[:200]
-    # Build a tiny valid bencoded torrent: announce + info{name, piece length, pieces, length}
+    # Build a minimal but valid bencoded torrent that MonoTorrent can parse.
+    # Keys in the info dict must be sorted for some decoders.
+    name_bytes = job_title.encode("utf-8", errors="replace")[:180] or b"file"
+    # Single piece of zeros is fine for a dummy
+    pieces = b"\x00" * 20
     info = (
         b"d"
         b"6:lengthi1e"
         b"4:name" + str(len(name_bytes)).encode() + b":" + name_bytes +
         b"12:piece lengthi16384e"
-        b"6:pieces20:" + b"\x00" * 20 +
+        b"6:pieces20:" + pieces +
         b"e"
     )
-    dummy = b"d8:announce0:4:infod" + info + b"ee"
+    # Outer dict: announce + info (sorted)
+    announce = b"http://localhost/announce"
+    dummy = (
+        b"d"
+        b"8:announce" + str(len(announce)).encode() + b":" + announce +
+        b"4:info" + info +
+        b"e"
+    )
     return Response(
         content=dummy,
         media_type="application/x-bittorrent",
