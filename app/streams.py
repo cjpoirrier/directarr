@@ -330,7 +330,8 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             raise RuntimeError("FFmpeg produced no usable output")
 
         final.parent.mkdir(parents=True, exist_ok=True)
-        staging.replace(final)
+        import shutil
+        shutil.move(str(staging), str(final))
 
         with connect() as db:
             db.execute(
