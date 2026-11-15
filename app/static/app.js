@@ -124,6 +124,7 @@
       releases: "Releases",
       downloads: "Downloads",
       streams: "Streams",
+      logs: "Logs",
       history: "History",
       stats: "Stats",
       sources: "Indexers",
@@ -146,6 +147,7 @@
       loadSyncProfiles();
     }
     if (name === "system") loadSystemStatus();
+    if (name === "logs") loadLogs();
     // Restart (or stop) the download poller for the new view
     manageDownloadPolling();
     setMobileNavOpen(false);
@@ -2041,6 +2043,21 @@
       pre.textContent = "Failed to load log: " + (e.message || e);
     }
   }
+
+  async function loadLogs() {
+    const pre = $("#logs-output");
+    if (!pre) return;
+    pre.textContent = "Loading…";
+    try {
+      const res = await api("/api/v1/logs/streams");
+      pre.textContent = (res.lines || []).join("\n") || "(no logs yet)";
+    } catch (e) {
+      pre.textContent = "Failed to load logs: " + (e.message || e);
+    }
+  }
+
+  const logsBtn = $("#logs-refresh");
+  if (logsBtn) logsBtn.addEventListener("click", loadLogs);
 
   const streamLogBtn = $("#stream-log-refresh");
   if (streamLogBtn) streamLogBtn.addEventListener("click", loadStreamLog);
