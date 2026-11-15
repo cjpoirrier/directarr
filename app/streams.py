@@ -369,7 +369,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         ]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # Poll for cancel
+        # Poll for cancel and timeout
+        import time
+        start = time.time()
         while proc.poll() is None:
             if is_cancelled(job_id):
                 proc.terminate()
@@ -378,9 +380,21 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 except Exception:
                     proc.kill()
                 raise DownloadCancelled("Cancelled")
-            # crude progress: just mark as downloading
-            import time
-            time.sleep(1)
+            if time.time() - start > 120:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                raise RuntimeError("FFmpeg timed out after 120s")
+            # rough progress tick
+            elapsed = int(time.time() - start)
+            with connect() as db:
+                db.execute(
+                    "UPDATE downloads SET progress=? WHERE id=? AND status='downloading'",
+                    (min(95, elapsed), job_id),
+                )
+            time.sleep(2)
 
         if proc.returncode != 0:
             err = (proc.stderr.read() or b"").decode(errors="replace")[-300:]
