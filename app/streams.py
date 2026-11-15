@@ -300,6 +300,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         header_arg = "\r\n".join(hdr_lines) + "\r\n" if hdr_lines else ""
 
         # Probe the playlist so we can see what FFmpeg will hit
+        probe_note = ""
         if ".m3u8" in stream_url.lower():
             try:
                 import httpx as _httpx
@@ -309,18 +310,10 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 }
                 with _httpx.Client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
-                body = pr.text[:500].replace("\n", " | ")
-                with connect() as db:
-                    db.execute(
-                        "UPDATE downloads SET error=? WHERE id=?",
-                        (f"playlist probe {pr.status_code}: {body}", job_id),
-                    )
+                body = pr.text[:400].replace("\n", " | ")
+                probe_note = f"playlist {pr.status_code}: {body}"
             except Exception as exc:
-                with connect() as db:
-                    db.execute(
-                        "UPDATE downloads SET error=? WHERE id=?",
-                        (f"playlist probe failed: {exc}", job_id),
-                    )
+                probe_note = f"playlist probe failed: {exc}"
 
         cmd = [
             "ffmpeg", "-y",
@@ -351,8 +344,11 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             time.sleep(1)
 
         if proc.returncode != 0:
-            err = (proc.stderr.read() or b"").decode(errors="replace")[-500:]
-            raise RuntimeError(f"FFmpeg failed: {err or 'unknown error'}")
+            err = (proc.stderr.read() or b"").decode(errors="replace")[-300:]
+            msg = f"FFmpeg failed: {err or 'unknown error'}"
+            if probe_note:
+                msg = probe_note + " || " + msg
+            raise RuntimeError(msg)
 
         if not staging.exists() or staging.stat().st_size < 1000:
             raise RuntimeError("FFmpeg produced no usable output")
