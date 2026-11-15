@@ -109,7 +109,7 @@ def _try_resolve_files(url: str):
         return []
 
 
-def results(query, season=None, episode=None, base_url: str = ""):
+def results(query, season=None, episode=None, base_url: str = "", api_key: str = ""):
     """Build Torznab RSS for Sonarr.
 
     Episode-specific searches resolve Drive folders and emit only the matching
@@ -170,11 +170,12 @@ def results(query, season=None, episode=None, base_url: str = ""):
                 if f["id"] in seen_file_ids:
                     continue
                 seen_file_ids.add(f["id"])
+                key_param = f"&apikey={api_key}" if api_key else ""
                 grab_url = (
                     f"{base_url.rstrip('/')}/api/v1/grab/{rid}"
-                    f"?drive_file_id={f['id']}&title={f['name']}"
+                    f"?drive_file_id={f['id']}&title={f['name']}{key_param}"
                     if base_url
-                    else f"/api/v1/grab/{rid}?drive_file_id={f['id']}&title={f['name']}"
+                    else f"/api/v1/grab/{rid}?drive_file_id={f['id']}&title={f['name']}{key_param}"
                 )
                 item = SubElement(channel, "item")
                 SubElement(item, "title").text = f["name"]
@@ -212,7 +213,8 @@ def results(query, season=None, episode=None, base_url: str = ""):
             # We already have concrete episode files; skip remaining packs
             continue
 
-        grab_url = f"{base_url.rstrip('/')}/api/v1/grab/{rid}" if base_url else f"/api/v1/grab/{rid}"
+        key_param = f"?apikey={api_key}" if api_key else ""
+        grab_url = f"{base_url.rstrip('/')}/api/v1/grab/{rid}{key_param}" if base_url else f"/api/v1/grab/{rid}{key_param}"
         item = SubElement(channel, "item")
         SubElement(item, "title").text = title
         SubElement(item, "guid", isPermaLink="false").text = rid

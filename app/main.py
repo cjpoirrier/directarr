@@ -197,7 +197,7 @@ async def torznab_api(
                     continue
         # Build absolute grab URLs so Sonarr can reach the enclosure
         base = str(request.base_url).rstrip("/")
-        return torznab.results(q, want_season, want_ep, base_url=base)
+        return torznab.results(q, want_season, want_ep, base_url=base, api_key=apikey)
     raise HTTPException(400, f"Unsupported Torznab function: {t}")
 
 
