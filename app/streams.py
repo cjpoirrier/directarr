@@ -310,8 +310,13 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 }
                 with _httpx.Client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
-                body = pr.text[:400].replace("\n", " | ")
-                probe_note = f"playlist {pr.status_code}: {body}"
+                body = pr.text[:1200].replace("\n", " | ")
+                # Extract video variant lines if present
+                import re as _re
+                variants = _re.findall(r'#EXT-X-STREAM-INF:[^\n|]*\|?\s*(https?://[^\s|]+)', pr.text)
+                if not variants:
+                    variants = _re.findall(r'(https?://[^\s]+)', pr.text)
+                probe_note = f"playlist {pr.status_code} variants={variants[:3]} body={body[:600]}"
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
