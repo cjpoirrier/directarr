@@ -315,19 +315,28 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 stream_infs = _re.findall(
                     r'#EXT-X-STREAM-INF:([^\n]+)\n([^\n]+)', body
                 )
-                video_urls = [u.strip().strip('"') for _, u in stream_infs if "http" in u]
-                # Also grab any non-subtitle media URIs
-                media_uris = _re.findall(r'URI="([^"]+)"', body)
-                # Show head and tail so video entries aren't missed
-                head = body[:500].replace("\n", " | ")
-                tail = body[-800:].replace("\n", " | ") if len(body) > 800 else ""
+                video_urls = []
+                from urllib.parse import urljoin
+                for _, u in stream_infs:
+                    u = u.strip().strip('"')
+                    if u:
+                        full = u if u.startswith("http") else urljoin(stream_url, u)
+                        video_urls.append(full)
                 probe_note = (
                     f"playlist {pr.status_code} len={len(body)} "
-                    f"video={video_urls[:3]} "
-                    f"head={head} "
-                    f"tail={tail}"
+                    f"video={video_urls[:2]}"
                 )
                 _log(probe_note)
+                # Test-fetch the first video variant
+                if video_urls:
+                    try:
+                        vr = client.get(video_urls[0], headers=probe_headers)
+                        vbody = vr.text[:300].replace("\n", " | ")
+                        probe_note += f" | variant0 {vr.status_code} len={len(vr.text)}: {vbody}"
+                        _log(f"variant0: {vr.status_code} {vbody[:200]}")
+                    except Exception as exc:
+                        probe_note += f" | variant0 failed: {exc}"
+                        _log(f"variant0 failed: {exc}")
                 # Test-fetch the first video variant if we have one
                 if video_urls:
                     try:
