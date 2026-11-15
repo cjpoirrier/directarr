@@ -137,9 +137,9 @@
         <div class="panel">
           <h2>Stream Detection</h2>
           <p class="hint">Paste a page URL or a direct .m3u8 link. Directarr will look for HLS playlists and list available qualities.</p>
-          <form id="stream-detect-form" class="row" style="gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem">
-            <input id="stream-url" type="url" placeholder="https://example.com/episode or https://.../playlist.m3u8" required style="flex:1;min-width:280px" />
-            <button class="btn primary" type="submit">Detect</button>
+          <form id="stream-detect-form" class="row" style="gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem" onsubmit="return false;">
+            <input id="stream-url" type="url" placeholder="https://example.com/episode or https://.../playlist.m3u8" style="flex:1;min-width:280px" />
+            <button class="btn primary" id="stream-detect-btn" type="button">Detect</button>
           </form>
           <div id="stream-status" class="hint" style="margin-top:0.5rem"></div>
           <div id="stream-variants" class="table-wrap" style="margin-top:1rem"></div>

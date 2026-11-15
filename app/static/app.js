@@ -1958,18 +1958,21 @@
     const url = $("#stream-url")?.value?.trim();
     const status = $("#stream-status");
     const table = $("#stream-variants");
-    if (!url) return;
+    const pre = $("#stream-log");
+    if (!url) {
+      if (status) status.textContent = "Paste a URL first";
+      return;
+    }
     if (status) status.textContent = "Detecting…";
     if (table) table.innerHTML = "";
+    if (pre) pre.textContent = "Calling /api/v1/streams/detect…";
     try {
       const res = await api("/api/v1/streams/detect", {
         method: "POST",
         body: JSON.stringify({ url }),
       });
-      // Show inline diagnostic log from the response
-      const pre = $("#stream-log");
       if (pre && res.log) {
-        pre.textContent = (res.log || []).join("\n") || "(no steps)";
+        pre.textContent = (res.log || []).join("\n") || "(no steps returned)";
       }
       if (res.error && !(res.variants || []).length) {
         if (status) status.textContent = res.error;
@@ -1986,7 +1989,7 @@
         <table class="data">
           <thead><tr><th>Quality</th><th>Bandwidth</th><th>Codecs</th><th></th></tr></thead>
           <tbody>
-            ${variants.map((v, i) => `
+            ${variants.map((v) => `
               <tr>
                 <td>${escapeHtml(v.resolution || "unknown")}</td>
                 <td>${v.bandwidth ? Math.round(v.bandwidth / 1000) + " kbps" : "—"}</td>
@@ -2017,9 +2020,10 @@
         });
       });
     } catch (e) {
-      if (status) status.textContent = e.message || "Detection failed";
+      const msg = e.message || String(e);
+      if (status) status.textContent = msg;
+      if (pre) pre.textContent = "Request failed:\n" + msg;
     }
-    loadStreamLog();
   }
 
   async function loadStreamLog() {
@@ -2036,9 +2040,9 @@
   const streamLogBtn = $("#stream-log-refresh");
   if (streamLogBtn) streamLogBtn.addEventListener("click", loadStreamLog);
 
-  const streamForm = $("#stream-detect-form");
-  if (streamForm) {
-    streamForm.addEventListener("submit", (ev) => {
+  const streamBtn = $("#stream-detect-btn");
+  if (streamBtn) {
+    streamBtn.addEventListener("click", (ev) => {
       ev.preventDefault();
       detectStreams();
     });
