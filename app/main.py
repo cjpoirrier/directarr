@@ -2,6 +2,7 @@ import hmac
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -54,6 +55,13 @@ app = FastAPI(
     title="Directarr",
     version="0.1.0",
     description="Anime direct-download indexer and internal queue manager",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 if STATIC_DIR.is_dir():
