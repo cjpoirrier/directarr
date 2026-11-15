@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 
 from . import gdrive, goindex, torznab
 from . import config
-from . import streams as streams_mod
+try:
+    from . import streams as streams_mod
+except Exception as _streams_err:
+    streams_mod = None
+    import logging as _logging
+    _logging.getLogger("directarr").warning("streams module unavailable: %s", _streams_err)
 from .auth import (
     SESSION_COOKIE,
     auth_mode,
@@ -405,6 +410,8 @@ class BulkDownloadRequest(BaseModel):
 @app.get("/api/v1/logs/streams")
 def streams_logs(request: Request, x_api_key: str | None = Header(default=None)):
     """Recent stream detection/download log lines for debugging."""
+    if streams_mod is None:
+        return {"lines": ["streams module not available"]}
     key = x_api_key or ""
     if key:
         require_key(key)
@@ -421,6 +428,8 @@ async def streams_detect(
 
     Body: {"url": "https://...", "headers": {"Referer": "...", "Cookie": "..."}}
     """
+    if streams_mod is None:
+        raise HTTPException(503, "Stream detection is not available")
     key = x_api_key or ""
     if key:
         require_key(key)
@@ -443,6 +452,8 @@ async def streams_download(
 
     Body: {"title": "...", "url": "https://...m3u8", "headers": {...}}
     """
+    if streams_mod is None:
+        raise HTTPException(503, "Stream download is not available")
     key = x_api_key or ""
     if key:
         require_key(key)

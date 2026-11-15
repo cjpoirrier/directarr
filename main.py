@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 from . import gdrive, goindex, torznab
 from . import config
-from . import streams as streams_mod
 from .auth import (
     SESSION_COOKIE,
     auth_mode,
@@ -20,19 +19,10 @@ from .auth import (
     username as auth_username,
 )
 from .config import set_api_key
-from . import applications as apps_mod
-from .db import add_history, connect, ensure_schema, init_db, list_history
-from .downloader import (
-    cancel_job,
-    clear_downloads,
-    delete_job_files,
-    enqueue,
-    remove_jobs_from_list,
-    run_download,
-)
+from .db import connect, init_db
+from .downloader import enqueue, run_download
 from .models import DownloadRequest, DriveAuthCodeRequest, DriveResolveRequest
-from .parser import build_search_queries, enrich as enrich_title, save_release
-from .settings_store import load_settings, save_settings
+from .parser import save_release
 from .sources import (
     add_source,
     delete_source,
@@ -57,26 +47,7 @@ if STATIC_DIR.is_dir():
 
 @app.on_event("startup")
 def startup():
-    # Do not take the whole process down if the config volume is not writable yet;
-    # /health must still answer so Docker does not mark the container unhealthy forever.
-    try:
-        init_db()
-    except Exception as exc:
-        import logging
-
-        logging.getLogger("directarr").exception(
-            "Database init failed (check ./config permissions): %s", exc
-        )
-        # Retry once after a short delay in case the volume was not ready.
-        try:
-            import time
-
-            time.sleep(0.5)
-            init_db()
-        except Exception as exc2:
-            logging.getLogger("directarr").exception(
-                "Database init retry failed: %s", exc2
-            )
+    init_db()
 
 
 def require_key(key):
@@ -115,21 +86,28 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/v1/auth/login")
-def auth_login(body: LoginRequest, response: Response):
+def auth_login(body: LoginRequest):
     if auth_mode() == "none":
         return {"ok": True, "user": auth_username(), "mode": "none"}
-    if not check_password_login(body.username.strip(), body.password):
+    user = (body.username or "").strip()
+    password = body.password or ""
+    if not user or not password:
+        raise HTTPException(400, "Username and password are required")
+    if not check_password_login(user, password):
         raise HTTPException(401, "Invalid username or password")
-    token = create_session_token(body.username.strip())
-    response.set_cookie(
+    token = create_session_token(user)
+    resp = JSONResponse({"ok": True, "user": user, "mode": auth_mode()})
+    # Path=/ so cookie is sent to /api/v1/* and /
+    resp.set_cookie(
         key=SESSION_COOKIE,
         value=token,
         httponly=True,
         samesite="lax",
         max_age=60 * 60 * 24 * 14,
         path="/",
+        secure=False,
     )
-    return {"ok": True, "user": body.username.strip()}
+    return resp
 
 
 @app.post("/api/v1/auth/logout")
@@ -159,109 +137,29 @@ def auth_change_password(
 
 @app.get("/api")
 async def torznab_api(
-    request: Request,
     apikey: str = Query(default=""),
     t: str = "caps",
     q: str = "",
     season: int | None = None,
     ep: int | None = None,
 ):
-    """Torznab endpoint for Sonarr/Prowlarr.
-
-    tvsearch runs several query variants (show, SxxExx, Season N, …) against
-    each adapter, indexes hits, then filters by season/episode for Sonarr.
-    """
     require_key(apikey)
     if t == "caps":
         return torznab.caps()
     if t in ("search", "tvsearch"):
-        want_season = season if t == "tvsearch" else None
-        want_ep = ep if t == "tvsearch" else None
-        queries = build_search_queries(q, season=want_season, episode=want_ep)
-        # Always include bare series name first; variants follow
-        if not queries and q:
-            queries = [q.strip()]
-        # Cap variants so we do not hammer upstream sites
-        queries = queries[:4]
         _, adapters = load_sources()
-        seen_urls: set[str] = set()
-        for query in queries:
-            for _, adapter in adapters:
-                try:
-                    for release in await adapter.search(query):
-                        key = (release.url or "") + "|" + (release.title or "")
-                        if key in seen_urls:
-                            continue
-                        seen_urls.add(key)
-                        save_release(release)
-                except Exception:
-                    continue
-        # Build absolute grab URLs so Sonarr can reach the enclosure
-        base = str(request.base_url).rstrip("/")
-        return torznab.results(q, want_season, want_ep, base_url=base)
+        for _, adapter in adapters:
+            try:
+                for release in await adapter.search(q):
+                    save_release(release)
+            except Exception:
+                continue
+        return torznab.results(
+            q,
+            season if t == "tvsearch" else None,
+            ep if t == "tvsearch" else None,
+        )
     raise HTTPException(400, f"Unsupported Torznab function: {t}")
-
-
-@app.get("/api/v1/grab/{release_id}")
-async def grab_release(
-    release_id: str,
-    background_tasks: BackgroundTasks,
-    request: Request,
-    apikey: str = Query(default=""),
-    drive_file_id: str = Query(default=""),
-    title: str = Query(default=""),
-    x_api_key: str | None = Header(default=None),
-):
-    """Torznab grab handoff: queues a Directarr download job when Sonarr fetches the enclosure.
-
-    Optional drive_file_id + title select a single resolved file from a Drive folder.
-    API key is optional here — the enclosure URL is only known after a successful
-    authenticated Torznab search. This lets cached Sonarr results still grab.
-    """
-    # Key is optional for grab; still validate if provided
-    key = apikey or x_api_key or ""
-    if key:
-        require_key(key)
-    with connect() as db:
-        row = db.execute("SELECT * FROM releases WHERE id=?", (release_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Release not found")
-    job_title = (title or row["title"] or "Unknown").strip()
-    url = row["url"] or ""
-    fid = (drive_file_id or "").strip() or None
-    try:
-        job_id = enqueue(job_title, url, drive_file_id=fid)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    background_tasks.add_task(run_download, job_id, job_title, url, fid)
-    add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=job_title)
-
-    # Valid minimal bencoded torrent so MonoTorrent can parse it
-    name_bytes = job_title.encode("utf-8", errors="replace")[:180] or b"file"
-    pieces = b"\x00" * 20
-    info = (
-        b"d"
-        b"6:lengthi1e"
-        b"4:name" + str(len(name_bytes)).encode() + b":" + name_bytes +
-        b"12:piece lengthi16384e"
-        b"6:pieces20:" + pieces +
-        b"e"
-    )
-    announce = b"http://localhost/announce"
-    dummy = (
-        b"d"
-        b"8:announce" + str(len(announce)).encode() + b":" + announce +
-        b"4:info" + info +
-        b"e"
-    )
-    return Response(
-        content=dummy,
-        media_type="application/x-bittorrent",
-        headers={
-            "Content-Disposition": f'attachment; filename="{job_id}.torrent"',
-            "Content-Length": str(len(dummy)),
-        },
-    )
 
 
 @app.get("/api/v1/search")
@@ -277,8 +175,6 @@ async def json_search(request: Request,
         try:
             for release in await adapter.search(q):
                 rid = save_release(release)
-                parsed = enrich_title(release.title)
-                _s, _e, res, codec, dual = parsed[0], parsed[1], parsed[2], parsed[3], parsed[4]
                 saved.append(
                     {
                         "id": rid,
@@ -286,11 +182,10 @@ async def json_search(request: Request,
                         "url": release.url,
                         "source": release.source,
                         "size": release.size,
-                        "season": release.season if release.season is not None else _s,
-                        "episode": release.episode if release.episode is not None else _e,
-                        "resolution": release.resolution or res,
-                        "codec": release.codec or codec,
-                        "dual_audio": dual,
+                        "season": release.season,
+                        "episode": release.episode,
+                        "resolution": release.resolution,
+                        "codec": release.codec,
                     }
                 )
         except Exception:
@@ -402,51 +297,6 @@ class BulkDownloadRequest(BaseModel):
     files: list[dict] = Field(default_factory=list, max_length=500)
 
 
-@app.post("/api/v1/streams/detect")
-async def streams_detect(
-    request: Request,
-    body: dict,
-    x_api_key: str | None = Header(default=None),
-):
-    """Detect HLS variants from a page URL or a direct M3U8 URL.
-
-    Body: {"url": "https://...", "headers": {"Referer": "...", "Cookie": "..."}}
-    """
-    key = x_api_key or ""
-    if key:
-        require_key(key)
-    url = (body.get("url") or "").strip()
-    if not url:
-        raise HTTPException(400, "url is required")
-    headers = body.get("headers") or {}
-    result = await streams_mod.detect_streams(url, headers=headers)
-    return result
-
-
-@app.post("/api/v1/streams/download", status_code=202)
-async def streams_download(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    body: dict,
-    x_api_key: str | None = Header(default=None),
-):
-    """Enqueue an HLS stream for FFmpeg download.
-
-    Body: {"title": "...", "url": "https://...m3u8", "headers": {...}}
-    """
-    key = x_api_key or ""
-    if key:
-        require_key(key)
-    title = (body.get("title") or "Stream").strip()
-    url = (body.get("url") or "").strip()
-    if not url:
-        raise HTTPException(400, "url is required")
-    headers = body.get("headers") or {}
-    job_id = streams_mod.enqueue_stream(title, url, headers=headers)
-    background_tasks.add_task(streams_mod.run_stream_download, job_id, title, url, headers)
-    return {"ok": True, "id": job_id, "status": "queued", "title": title}
-
-
 @app.post("/api/v1/downloads", status_code=202)
 async def add_download(
     body: DownloadRequest,
@@ -538,201 +388,13 @@ def download_status(request: Request, job_id: str, x_api_key: str | None = Heade
     return dict(row)
 
 
-@app.post("/api/v1/downloads/{job_id}/cancel")
-def cancel_download(
-    request: Request, job_id: str, x_api_key: str | None = Header(default=None)
-):
-    """Cancel a queued or in-progress download. Completed jobs are left alone."""
-    require_auth(request, x_api_key)
-    row = cancel_job(job_id)
-    if row is None:
-        raise HTTPException(404, "Job not found")
-    return row
-
-
-@app.delete("/api/v1/downloads/{job_id}")
-def delete_download(
-    request: Request, job_id: str, x_api_key: str | None = Header(default=None)
-):
-    """Cancel if still active, then remove the job from the list."""
-    require_auth(request, x_api_key)
-    cancel_job(job_id)
-    with connect() as db:
-        cur = db.execute("DELETE FROM downloads WHERE id=?", (job_id,))
-        if cur.rowcount == 0:
-            raise HTTPException(404, "Job not found")
-    return {"ok": True, "id": job_id}
-
-
-class ClearDownloadsRequest(BaseModel):
-    finished_only: bool = True
-
-
-class BulkIdsRequest(BaseModel):
-    ids: list[str] = Field(default_factory=list, max_length=500)
-
-
-@app.post("/api/v1/downloads/clear")
-def clear_download_list(
-    request: Request,
-    body: ClearDownloadsRequest | None = None,
-    x_api_key: str | None = Header(default=None),
-):
-    """Remove finished jobs from the queue list. finished_only=false clears everything."""
-    require_auth(request, x_api_key)
-    finished_only = True if body is None else bool(body.finished_only)
-    result = clear_downloads(finished_only=finished_only)
-    return {"ok": True, **result}
-
-
-@app.post("/api/v1/downloads/bulk-remove")
-def bulk_remove_downloads(
-    request: Request,
-    body: BulkIdsRequest,
-    x_api_key: str | None = Header(default=None),
-):
-    """Remove multiple jobs from the list only (does not delete files on disk)."""
-    require_auth(request, x_api_key)
-    if not body.ids:
-        raise HTTPException(400, "ids required")
-    result = remove_jobs_from_list(body.ids)
-    return {"ok": True, **result}
-
-
-@app.post("/api/v1/downloads/delete-files")
-def bulk_delete_download_files(
-    request: Request,
-    body: BulkIdsRequest,
-    x_api_key: str | None = Header(default=None),
-):
-    """Delete physical files for the given jobs. Leaves the list entries in place."""
-    require_auth(request, x_api_key)
-    if not body.ids:
-        raise HTTPException(400, "ids required")
-    result = delete_job_files(body.ids)
-    return {"ok": True, **result}
-
-
 @app.get("/api/v1/settings/security")
 def settings_security(request: Request, x_api_key: str | None = Header(default=None)):
-    """Sonarr-style security / general settings (host, auth, API key)."""
+    """Sonarr-style security settings: current API key for Torznab clients."""
     require_auth(request, x_api_key)
-    return load_settings()
-
-
-class GeneralSettingsPatch(BaseModel):
-    bind_address: str | None = None
-    port: int | None = None
-    url_base: str | None = None
-    allowed_hosts: str | None = None
-    auth_mode: str | None = None
-    auth_required: bool | None = None
-    auth_username: str | None = None
-    current_password: str | None = None
-    new_password: str | None = None
-
-
-@app.put("/api/v1/settings/general")
-def settings_general_update(
-    body: GeneralSettingsPatch,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    """Update Host + Security fields from the General settings tab."""
-    require_auth(request, x_api_key)
-    patch = body.model_dump(exclude_unset=True)
-    # Password change is optional alongside other fields
-    new_pw = patch.pop("new_password", None)
-    cur_pw = patch.pop("current_password", None)
-    try:
-        result = save_settings(patch) if patch else load_settings()
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    if new_pw is not None:
-        if not cur_pw or not check_password_login(auth_username(), cur_pw):
-            raise HTTPException(400, "Current password is incorrect")
-        try:
-            set_password(new_pw)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        add_history("settings", "Password changed")
-    if patch:
-        add_history("settings", "General settings updated", ", ".join(sorted(patch.keys())))
-    return result
-
-
-@app.get("/api/v1/stats")
-def stats_overview(request: Request, x_api_key: str | None = Header(default=None)):
-    """Aggregate download and release stats for the Stats page."""
-    require_auth(request, x_api_key)
-    with connect() as db:
-        downloads_total = db.execute("SELECT COUNT(*) AS c FROM downloads").fetchone()["c"]
-        releases_total = db.execute("SELECT COUNT(*) AS c FROM releases").fetchone()["c"]
-        status_rows = db.execute(
-            "SELECT status, COUNT(*) AS c FROM downloads GROUP BY status"
-        ).fetchall()
-        source_rows = db.execute(
-            "SELECT source, COUNT(*) AS c FROM releases GROUP BY source ORDER BY c DESC LIMIT 50"
-        ).fetchall()
-        recent = db.execute(
-            "SELECT id, title, status, created_at FROM downloads ORDER BY created_at DESC LIMIT 25"
-        ).fetchall()
-    downloads_by_status = {str(r["status"] or "unknown"): int(r["c"]) for r in status_rows}
-    releases_by_source = [
-        {"source": str(r["source"] or "unknown"), "count": int(r["c"])} for r in source_rows
-    ]
-    recent_downloads = [
-        {
-            "id": r["id"],
-            "title": r["title"],
-            "status": r["status"],
-            "created_at": r["created_at"],
-        }
-        for r in recent
-    ]
     return {
-        "downloads_total": int(downloads_total),
-        "releases_total": int(releases_total),
-        "downloads_by_status": downloads_by_status,
-        "releases_by_source": releases_by_source,
-        "recent_downloads": recent_downloads,
-    }
-
-
-@app.get("/api/v1/system/status")
-def system_status(request: Request, x_api_key: str | None = Header(default=None)):
-    """Sonarr/Prowlarr-style system status for the System tab."""
-    require_auth(request, x_api_key)
-    import platform
-    import sys
-
-    raw, adapters = load_sources()
-    gstat = gdrive.credentials_status()
-    with connect() as db:
-        releases = db.execute("SELECT COUNT(*) AS c FROM releases").fetchone()["c"]
-        downloads = db.execute("SELECT COUNT(*) AS c FROM downloads").fetchone()["c"]
-        active = db.execute(
-            "SELECT COUNT(*) AS c FROM downloads WHERE status IN ('queued','downloading')"
-        ).fetchone()["c"]
-    return {
-        "app": "Directarr",
-        "version": app.version,
-        "python": sys.version.split()[0],
-        "platform": platform.platform(),
-        "auth_mode": config.AUTH_MODE,
-        "config_dir": str(config.CONFIG_DIR),
-        "download_dir": str(config.DOWNLOAD_DIR),
-        "staging_dir": str(config.STAGING_DIR),
-        "max_download_mb": int(config.MAX_DOWNLOAD_BYTES / (1024 * 1024)),
-        "download_connections": config.DOWNLOAD_CONNECTIONS,
-        "indexers_total": len(raw),
-        "indexers_enabled": len(adapters),
-        "releases": releases,
-        "downloads": downloads,
-        "downloads_active": active,
-        "gdrive_authorized": bool(gstat.get("authorized")),
+        "api_key": config.API_KEY,
         "torznab_path": "/api",
-        "health": "ok",
     }
 
 
@@ -743,206 +405,11 @@ def settings_regenerate_api_key(request: Request, x_api_key: str | None = Header
     import secrets
     new_key = secrets.token_hex(20)
     set_api_key(new_key)
-    add_history("settings", "API key regenerated")
     return {
         "api_key": config.API_KEY,
         "torznab_path": "/api",
         "message": "API key regenerated. Update Sonarr/Radarr indexers with the new key.",
     }
-
-
-# ── Applications (Sonarr / Radarr / …) ──────────────────────────────────────
-
-
-@app.get("/api/v1/applications/catalog")
-def applications_catalog(request: Request, x_api_key: str | None = Header(default=None)):
-    require_auth(request, x_api_key)
-    return {"items": apps_mod.catalog()}
-
-
-@app.get("/api/v1/applications")
-def applications_list(request: Request, x_api_key: str | None = Header(default=None)):
-    require_auth(request, x_api_key)
-    return {"items": apps_mod.list_applications()}
-
-
-class ApplicationBody(BaseModel):
-    name: str | None = None
-    app_type: str = "sonarr"
-    base_url: str
-    api_key: str = ""
-    sync_level: str = "fullSync"
-    sync_profile_id: str | None = "default"
-    enabled: bool = True
-    tags: str = ""
-
-
-@app.post("/api/v1/applications", status_code=201)
-def applications_create(
-    body: ApplicationBody,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    try:
-        return apps_mod.add_application(body.model_dump())
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    except Exception as e:
-        import logging
-        logging.getLogger("directarr").exception("applications_create failed")
-        raise HTTPException(500, f"Failed to save application: {e}") from e
-
-
-@app.get("/api/v1/applications/{app_id}")
-def applications_get(
-    app_id: str,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    app = apps_mod.get_application(app_id)
-    if not app:
-        raise HTTPException(404, "Application not found")
-    return app
-
-
-@app.put("/api/v1/applications/{app_id}")
-def applications_update(
-    app_id: str,
-    body: ApplicationBody,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    try:
-        return apps_mod.update_application(app_id, body.model_dump())
-    except KeyError:
-        raise HTTPException(404, "Application not found") from None
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-
-@app.delete("/api/v1/applications/{app_id}")
-def applications_delete(
-    app_id: str,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    if not apps_mod.delete_application(app_id):
-        raise HTTPException(404, "Application not found")
-    return {"ok": True}
-
-
-@app.post("/api/v1/applications/{app_id}/test")
-async def applications_test(
-    app_id: str,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    try:
-        return await apps_mod.test_application(app_id=app_id)
-    except KeyError:
-        raise HTTPException(404, "Application not found") from None
-
-
-@app.post("/api/v1/applications/test")
-async def applications_test_body(
-    body: ApplicationBody,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    """Test connection before saving."""
-    require_auth(request, x_api_key)
-    try:
-        return await apps_mod.test_application(data=body.model_dump())
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-
-# ── Sync profiles ───────────────────────────────────────────────────────────
-
-
-@app.get("/api/v1/sync-profiles")
-def sync_profiles_list(request: Request, x_api_key: str | None = Header(default=None)):
-    require_auth(request, x_api_key)
-    return {"items": apps_mod.list_sync_profiles()}
-
-
-class SyncProfileBody(BaseModel):
-    name: str
-    enable_rss: bool = True
-    enable_automatic_search: bool = True
-    enable_interactive_search: bool = True
-    minimum_seeders: int = 1
-
-
-@app.post("/api/v1/sync-profiles", status_code=201)
-def sync_profiles_create(
-    body: SyncProfileBody,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    try:
-        return apps_mod.upsert_sync_profile(body.model_dump())
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-
-@app.put("/api/v1/sync-profiles/{profile_id}")
-def sync_profiles_update(
-    profile_id: str,
-    body: SyncProfileBody,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    try:
-        return apps_mod.upsert_sync_profile(body.model_dump(), profile_id=profile_id)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-
-@app.delete("/api/v1/sync-profiles/{profile_id}")
-def sync_profiles_delete(
-    profile_id: str,
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-):
-    require_auth(request, x_api_key)
-    try:
-        if not apps_mod.delete_sync_profile(profile_id):
-            raise HTTPException(404, "Profile not found")
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    return {"ok": True}
-
-
-# ── History ─────────────────────────────────────────────────────────────────
-
-
-@app.get("/api/v1/history")
-def history_list(
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
-    event_type: str | None = Query(default=None),
-):
-    require_auth(request, x_api_key)
-    return {"items": list_history(limit=limit, event_type=event_type)}
-
-
-@app.delete("/api/v1/history")
-def history_clear(request: Request, x_api_key: str | None = Header(default=None)):
-    require_auth(request, x_api_key)
-    ensure_schema()
-    with connect() as db:
-        db.execute("DELETE FROM history")
-    add_history("system", "History cleared")
-    return {"ok": True}
 
 
 @app.get("/api/v1/gdrive/status")
