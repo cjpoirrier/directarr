@@ -336,6 +336,17 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                         except Exception as exc:
                             probe_note += f" | variant0 failed: {exc}"
                             _log(f"variant0 failed: {exc}")
+                        # Test one segment URL from the variant playlist
+                        try:
+                            import re as _re2
+                            seg = _re2.search(r'(https?://[^\s]+\.html)', vr.text if 'vr' in dir() else "")
+                            if seg:
+                                sr = client.get(seg.group(1), headers=probe_headers)
+                                ctype = sr.headers.get("content-type", "")
+                                probe_note += f" | seg {sr.status_code} type={ctype} len={len(sr.content)}"
+                                _log(f"segment: {sr.status_code} {ctype} {len(sr.content)} bytes")
+                        except Exception as exc:
+                            _log(f"segment probe failed: {exc}")
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
