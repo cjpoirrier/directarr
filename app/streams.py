@@ -371,34 +371,41 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                             variant_url = urljoin(stream_url, variant_url)
                         variant = client.get(variant_url, headers=probe_headers).text
                         segs = _re.findall(r'(https?://[^\s]+)', variant)
-                        _log(f"manual: {len(segs)} segments")
-                        # download first 30 segments as a test
+                        _log(f"manual: {len(segs)} segments (full)")
+                        limit = len(segs)
                         seg_dir = STAGING_DIR / f"{job_id}_segs"
                         seg_dir.mkdir(exist_ok=True)
                         paths = []
-                        for i, su in enumerate(segs[:30]):
+                        for i, su in enumerate(segs):
                             if is_cancelled(job_id):
                                 raise DownloadCancelled("Cancelled")
                             r = client.get(su, headers=probe_headers)
-                            p = seg_dir / f"{i:04d}.ts"
+                            p = seg_dir / f"{i:05d}.ts"
                             p.write_bytes(r.content)
                             paths.append(p)
-                            if i % 5 == 0:
+                            if i % 20 == 0 or i == limit - 1:
                                 with connect() as db:
                                     db.execute(
                                         "UPDATE downloads SET progress=? WHERE id=?",
-                                        (int(i / 30 * 80), job_id),
+                                        (int((i + 1) / limit * 90), job_id),
                                     )
-                        # concat list
                         lst = seg_dir / "list.txt"
-                        lst.write_text("\n".join(f"file '{p}'" for p in paths))
+                        lst.write_text("\n".join(f"file '{p.name}'" for p in paths))
                         out = STAGING_DIR / f"{job_id}.part.mkv"
                         cmd = [
                             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                            "-f", "concat", "-safe", "0", "-i", str(lst),
-                            "-c", "copy", str(out),
+                            "-f", "concat", "-safe", "0",
+                            "-i", str(lst),
+                            "-c", "copy",
+                            "-bsf:a", "aac_adtstoasc",
+                            str(out),
                         ]
-                        subprocess.run(cmd, check=True, timeout=60)
+                        result = subprocess.run(
+                            cmd, cwd=str(seg_dir),
+                            capture_output=True, text=True, timeout=600,
+                        )
+                        if result.returncode != 0:
+                            raise RuntimeError(f"concat failed: {result.stderr[-300:]}")
                         final = DOWNLOAD_DIR / (_safe_name(title, job_id) + ".mkv")
                         import shutil
                         shutil.move(str(out), str(final))
@@ -407,7 +414,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                                 "UPDATE downloads SET status='completed', progress=100, path=? WHERE id=?",
                                 (str(final), job_id),
                             )
-                        _log(f"manual download complete: {final}")
+                        _log(f"manual download complete: {final} ({final.stat().st_size} bytes)")
                         return
             except Exception as exc:
                 _log(f"manual download failed: {exc}", "error")
