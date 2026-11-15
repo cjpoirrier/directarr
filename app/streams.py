@@ -464,25 +464,43 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                     vid = kisscloud.rstrip("/").split("/")[-1]
                     if vid and len(vid) > 8:
                         api = f"https://kisscloud.online/player/index.php?data={vid}&do=getVideo"
-                        step(f"trying getVideo: {api}")
+                        step(f"trying getVideo POST: {api}")
                         try:
                             resp = await page2.evaluate(f"""async () => {{
-                                const r = await fetch("{api}", {{credentials: "include"}});
+                                const r = await fetch("{api}", {{
+                                    method: "POST",
+                                    credentials: "include",
+                                    headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
+                                    body: "hash={vid}&r=" + encodeURIComponent(document.referrer || "")
+                                }});
                                 return await r.text();
                             }}""")
                             step(f"getVideo response length: {len(resp or '')}")
                             if resp:
-                                step("getVideo snippet: " + resp[:200].replace("\n", " "))
+                                step("getVideo snippet: " + resp[:300].replace("\n", " "))
                                 import re as _re
-                                # Look for any JSON-looking or API URLs
+                                # Try to parse as JSON
+                                try:
+                                    import json as _json
+                                    data = _json.loads(resp)
+                                    step(f"getVideo JSON keys: {list(data.keys())[:10]}")
+                                    # look for file/sources
+                                    srcs = data.get("videoSources") or data.get("sources") or []
+                                    if isinstance(srcs, list):
+                                        for s in srcs[:5]:
+                                            if isinstance(s, dict) and s.get("file"):
+                                                step(f"source file: {str(s.get('file'))[:100]}")
+                                    if data.get("ck"):
+                                        step("has ck key")
+                                except Exception:
+                                    pass
                                 for m in _re.findall(r'https?://[^"\'\s<>]+', resp):
-                                    if any(x in m.lower() for x in ["m3u8", "hls", "getvideo", "source", "playlist", ".mp4"]):
+                                    if any(x in m.lower() for x in ["m3u8", "hls", ".mp4", "master"]):
                                         if m not in found:
                                             found.append(m)
                                             step(f"getVideo url {m}")
-                                # Also look for data endpoints
-                                for m in _re.findall(r'["\']([^"\']*(?:getVideo|sources|playlist|m3u8)[^"\']*)["\']', resp, _re.I):
-                                    step(f"getVideo ref {m[:120]}")
+                        except Exception as exc:
+                            step(f"getVideo fetch failed: {exc}")
                         except Exception as exc:
                             step(f"getVideo fetch failed: {exc}")
                     for sel in ["video", ".jw-icon-play", "[class*='play']", "button"]:
