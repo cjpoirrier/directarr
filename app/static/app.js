@@ -2014,7 +2014,22 @@
     } catch (e) {
       if (status) status.textContent = e.message || "Detection failed";
     }
+    loadStreamLog();
   }
+
+  async function loadStreamLog() {
+    const pre = $("#stream-log");
+    if (!pre) return;
+    try {
+      const res = await api("/api/v1/logs/streams");
+      pre.textContent = (res.lines || []).join("\n") || "(no stream logs yet)";
+    } catch (e) {
+      pre.textContent = "Failed to load log: " + (e.message || e);
+    }
+  }
+
+  const streamLogBtn = $("#stream-log-refresh");
+  if (streamLogBtn) streamLogBtn.addEventListener("click", loadStreamLog);
 
   const streamForm = $("#stream-detect-form");
   if (streamForm) {

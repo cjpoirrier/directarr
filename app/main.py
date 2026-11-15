@@ -402,6 +402,15 @@ class BulkDownloadRequest(BaseModel):
     files: list[dict] = Field(default_factory=list, max_length=500)
 
 
+@app.get("/api/v1/logs/streams")
+def streams_logs(request: Request, x_api_key: str | None = Header(default=None)):
+    """Recent stream detection/download log lines for debugging."""
+    key = x_api_key or ""
+    if key:
+        require_key(key)
+    return {"lines": streams_mod.get_recent_logs()}
+
+
 @app.post("/api/v1/streams/detect")
 async def streams_detect(
     request: Request,

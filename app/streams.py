@@ -6,6 +6,7 @@ user pick a quality, and downloads via FFmpeg into the existing queue.
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import uuid
@@ -18,7 +19,25 @@ import httpx
 from .config import DOWNLOAD_DIR, STAGING_DIR
 from .db import connect
 
+log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
+
+# Simple ring buffer for recent stream-related log lines (shared with main)
+_LOG_BUFFER: list[str] = []
+_LOG_MAX = 200
+
+
+def _log(msg: str, level: str = "info") -> None:
+    """Write to logger and keep a short in-memory buffer for the UI."""
+    line = f"[streams] {msg}"
+    getattr(log, level, log.info)(msg)
+    _LOG_BUFFER.append(line)
+    if len(_LOG_BUFFER) > _LOG_MAX:
+        del _LOG_BUFFER[: len(_LOG_BUFFER) - _LOG_MAX]
+
+
+def get_recent_logs() -> list[str]:
+    return list(_LOG_BUFFER[-100:])
 
 
 def _safe_name(title: str, job_id: str) -> str:
@@ -41,6 +60,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
     """
     headers = {"User-Agent": USER_AGENT, **(headers or {})}
     result: dict[str, Any] = {"input": url, "type": "unknown", "variants": [], "error": None}
+    _log(f"detect start: {url}")
 
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
@@ -48,13 +68,17 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
             r.raise_for_status()
             text = r.text
             final_url = str(r.url)
+        _log(f"fetched {final_url} status={r.status_code} len={len(text)}")
     except Exception as exc:
+        _log(f"fetch failed: {exc}", "error")
         result["error"] = str(exc)
         return result
 
     # Direct M3U8?
     if "#EXTM3U" in text or url.lower().endswith(".m3u8") or "m3u8" in final_url.lower():
-        return _parse_m3u8(text, final_url)
+        parsed = _parse_m3u8(text, final_url)
+        _log(f"parsed as m3u8 type={parsed['type']} variants={len(parsed['variants'])}")
+        return parsed
 
     # Page: look for m3u8 URLs
     m3u8_urls = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', text, re.I)
@@ -62,6 +86,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
         # relative
         rel = re.findall(r'["\']([^"\']+\.m3u8[^"\']*)["\']', text, re.I)
         m3u8_urls = [urljoin(final_url, u) for u in rel]
+    _log(f"page scan found {len(m3u8_urls)} m3u8 candidates")
 
     if not m3u8_urls:
         result["type"] = "page"
