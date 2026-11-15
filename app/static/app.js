@@ -2083,18 +2083,22 @@
         const res = await api("/api/v1/streams/capture", { method: "POST", body: { url } });
         if (pre && res.log) pre.textContent = (res.log || []).join("\n");
         const variants = res.variants || [];
+        const pageTitle = res.title || "captured";
         if (status) status.textContent = variants.length ? variants.length + " captured" : (res.error || "Nothing captured");
         const table = $("#stream-variants");
         if (table && variants.length) {
           table.innerHTML = variants.map(v =>
             '<div class="row" style="margin:0.25rem 0"><code style="flex:1">' + escapeHtml(v.url) + '</code>' +
-            '<button class="btn sm primary" data-stream-url="' + escapeHtml(v.url) + '">Download</button></div>'
+            '<button class="btn sm primary" data-stream-url="' + escapeHtml(v.url) + '" data-stream-title="' + escapeHtml(pageTitle) + '">Download</button></div>'
           ).join("");
           table.querySelectorAll("button[data-stream-url]").forEach(btn => {
             btn.addEventListener("click", async () => {
               btn.disabled = true;
               try {
-                await api("/api/v1/streams/download", { method: "POST", body: { title: "captured", url: btn.getAttribute("data-stream-url") } });
+                await api("/api/v1/streams/download", {
+                  method: "POST",
+                  body: { title: btn.getAttribute("data-stream-title") || pageTitle, url: btn.getAttribute("data-stream-url") },
+                });
                 btn.textContent = "Queued";
               } catch (e) { btn.disabled = false; }
             });
