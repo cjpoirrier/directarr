@@ -127,19 +127,13 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
                                 "average_bandwidth": 0,
                             })
                         return {"input": url, "type": "embed", "variants": variants, "error": None, "log": result["log"]}
-                    # No direct media; surface the embed itself so user can inspect
+                    # No direct media found. Do not offer the embed page as a downloadable stream.
+                    step("embed page has no direct m3u8/mp4 (stream is likely loaded by encrypted JS)")
                     return {
                         "input": url,
                         "type": "embed",
-                        "variants": [{
-                            "url": embed,
-                            "resolution": "embed-page",
-                            "bandwidth": 0,
-                            "codecs": "",
-                            "name": "embed",
-                            "average_bandwidth": 0,
-                        }],
-                        "error": "Found embed page but no direct m3u8/mp4. The stream may be loaded by JS.",
+                        "variants": [],
+                        "error": "Found the player embed, but the stream URL is encrypted/loaded by JavaScript. Direct download is not available for this page.",
                         "log": result["log"],
                     }
             except Exception as exc:
@@ -263,11 +257,17 @@ def enqueue_stream(title: str, stream_url: str, headers: dict | None = None) -> 
 
 
 def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict | None = None) -> None:
-    """Blocking FFmpeg download. Updates the downloads row as it goes.
-
-    Called from a background task. Copies to DOWNLOAD_DIR on success.
-    """
+    """Blocking FFmpeg download. Updates the downloads row as it goes."""
     from .downloader import is_cancelled, DownloadCancelled
+    import shutil
+
+    if not shutil.which("ffmpeg"):
+        with connect() as db:
+            db.execute(
+                "UPDATE downloads SET status='failed', error=? WHERE id=?",
+                ("ffmpeg not found in container. Install ffmpeg to download streams.", job_id),
+            )
+        return
 
     target_name = _safe_name(title, job_id) + ".mkv"
     staging = STAGING_DIR / f"{job_id}.part.mkv"
