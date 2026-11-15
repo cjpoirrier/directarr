@@ -321,8 +321,10 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 probe_note = (
                     f"playlist {pr.status_code} len={len(body)} "
                     f"video={video_urls[:3]} "
-                    f"uris={media_uris[:2]}"
+                    f"uris={media_uris[:2]} "
+                    f"raw={body[:600].replace(chr(10), ' | ')}"
                 )
+                _log(probe_note)
                 # Test-fetch the first video variant if we have one
                 if video_urls:
                     try:
@@ -367,6 +369,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             msg = f"FFmpeg failed: {err or 'unknown error'}"
             if probe_note:
                 msg = probe_note + " || " + msg
+            _log(msg, "error")
             raise RuntimeError(msg)
 
         if not staging.exists() or staging.stat().st_size < 1000:
