@@ -350,3 +350,60 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             except Exception:
                 pass
         raise
+
+
+async def capture_with_browser(url: str, timeout: int = 15) -> dict:
+    """Load a page in a headless browser and capture m3u8/mp4 requests.
+
+    Requires playwright and a Chromium install.
+    """
+    result = {"input": url, "type": "browser", "variants": [], "error": None, "log": []}
+
+    def step(msg: str) -> None:
+        result["log"].append(msg)
+        _log(msg)
+
+    step(f"browser capture start: {url}")
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        result["error"] = "playwright not installed. Add it to the image and run playwright install chromium."
+        step(result["error"])
+        return result
+
+    found = []
+
+    async def on_request(req):
+        u = req.url
+        if ".m3u8" in u.lower() or ".mp4" in u.lower():
+            if u not in found:
+                found.append(u)
+                step(f"captured {u}")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
+            page.on("request", on_request)
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            await page.wait_for_timeout(4000)
+            await browser.close()
+    except Exception as exc:
+        result["error"] = str(exc)
+        step(f"browser error: {exc}")
+        return result
+
+    for u in found[:10]:
+        result["variants"].append({
+            "url": u,
+            "resolution": "captured",
+            "bandwidth": 0,
+            "codecs": "",
+            "name": "browser",
+            "average_bandwidth": 0,
+        })
+    if not found:
+        result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
+        step(result["error"])
+    return result

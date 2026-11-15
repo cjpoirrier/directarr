@@ -441,6 +441,25 @@ async def streams_detect(
     return result
 
 
+@app.post("/api/v1/streams/capture")
+async def streams_capture(
+    request: Request,
+    body: dict,
+    x_api_key: str | None = Header(default=None),
+):
+    """Load the page in a headless browser and capture m3u8/mp4 requests."""
+    if streams_mod is None:
+        raise HTTPException(503, "Stream capture is not available")
+    key = x_api_key or ""
+    if key:
+        require_key(key)
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    result = await streams_mod.capture_with_browser(url)
+    return result
+
+
 @app.post("/api/v1/streams/download", status_code=202)
 async def streams_download(
     request: Request,

@@ -2052,6 +2052,43 @@
       detectStreams();
     });
   }
+  const captureBtn = $("#stream-capture-btn");
+  if (captureBtn) {
+    captureBtn.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      const url = $("#stream-url")?.value?.trim();
+      const status = $("#stream-status");
+      const pre = $("#stream-log");
+      if (!url) { if (status) status.textContent = "Paste a URL first"; return; }
+      if (status) status.textContent = "Capturing with browser…";
+      if (pre) pre.textContent = "Loading page in headless browser…";
+      try {
+        const res = await api("/api/v1/streams/capture", { method: "POST", body: { url } });
+        if (pre && res.log) pre.textContent = (res.log || []).join("\n");
+        const variants = res.variants || [];
+        if (status) status.textContent = variants.length ? variants.length + " captured" : (res.error || "Nothing captured");
+        const table = $("#stream-variants");
+        if (table && variants.length) {
+          table.innerHTML = variants.map(v =>
+            '<div class="row" style="margin:0.25rem 0"><code style="flex:1">' + escapeHtml(v.url) + '</code>' +
+            '<button class="btn sm primary" data-stream-url="' + escapeHtml(v.url) + '">Download</button></div>'
+          ).join("");
+          table.querySelectorAll("button[data-stream-url]").forEach(btn => {
+            btn.addEventListener("click", async () => {
+              btn.disabled = true;
+              try {
+                await api("/api/v1/streams/download", { method: "POST", body: { title: "captured", url: btn.getAttribute("data-stream-url") } });
+                btn.textContent = "Queued";
+              } catch (e) { btn.disabled = false; }
+            });
+          });
+        }
+      } catch (e) {
+        if (status) status.textContent = e.message || "Capture failed";
+        if (pre) pre.textContent = String(e.message || e);
+      }
+    });
+  }
   // Expose for the inline onclick fallback
   window.directarrDetect = detectStreams;
 
