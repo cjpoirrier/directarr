@@ -91,6 +91,60 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
         m3u8_urls = [urljoin(final_url, u) for u in rel]
     step(f"page scan found {len(m3u8_urls)} m3u8 candidates")
 
+    # Dooplay / similar: player API returns an embed URL
+    if not m3u8_urls:
+        doo = re.search(r'player_api["\']?\s*[:=]\s*["\']([^"\']+)["\']', text)
+        post = re.search(r"data-post=['\"](\d+)['\"]", text)
+        ptype = re.search(r"data-type=['\"](\w+)['\"]", text)
+        nume = re.search(r"data-nume=['\"](\d+)['\"]", text)
+        if doo and post and ptype and nume:
+            api = doo.group(1).rstrip("/") + f"/{post.group(1)}/{ptype.group(1)}/{nume.group(1)}"
+            step(f"dooplay api: {api}")
+            try:
+                async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                    pr = await client.get(api, headers={**headers, "Referer": final_url})
+                    pr.raise_for_status()
+                    pdata = pr.json()
+                embed = (pdata or {}).get("embed_url") or ""
+                step(f"dooplay embed: {embed or 'none'}")
+                if embed:
+                    # Follow embed and look for m3u8/mp4
+                    async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                        er = await client.get(embed, headers={**headers, "Referer": final_url})
+                        er.raise_for_status()
+                        etext = er.text
+                    found = re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', etext, re.I)
+                    step(f"embed scan found {len(found)} media urls")
+                    if found:
+                        variants = []
+                        for u in found[:8]:
+                            variants.append({
+                                "url": u,
+                                "resolution": "embed",
+                                "bandwidth": 0,
+                                "codecs": "",
+                                "name": "embed",
+                                "average_bandwidth": 0,
+                            })
+                        return {"input": url, "type": "embed", "variants": variants, "error": None, "log": result["log"]}
+                    # No direct media; surface the embed itself so user can inspect
+                    return {
+                        "input": url,
+                        "type": "embed",
+                        "variants": [{
+                            "url": embed,
+                            "resolution": "embed-page",
+                            "bandwidth": 0,
+                            "codecs": "",
+                            "name": "embed",
+                            "average_bandwidth": 0,
+                        }],
+                        "error": "Found embed page but no direct m3u8/mp4. The stream may be loaded by JS.",
+                        "log": result["log"],
+                    }
+            except Exception as exc:
+                step(f"dooplay follow failed: {exc}")
+
     if not m3u8_urls:
         result["type"] = "page"
         result["error"] = "No .m3u8 playlists found on the page. Paste an M3U8 URL directly."
