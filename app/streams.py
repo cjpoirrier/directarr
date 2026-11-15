@@ -48,19 +48,22 @@ def _safe_name(title: str, job_id: str) -> str:
 async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any]:
     """Fetch a page or M3U8 and return detected variants.
 
-    Returns:
-      {
-        "input": url,
-        "type": "master" | "media" | "page" | "unknown",
-        "variants": [
-          {"url": ..., "resolution": "1080p", "bandwidth": 5000000, "codecs": "...", "name": "..."}
-        ],
-        "error": optional
-      }
+    The returned dict always includes a "log" list of steps for the UI.
     """
     headers = {"User-Agent": USER_AGENT, **(headers or {})}
-    result: dict[str, Any] = {"input": url, "type": "unknown", "variants": [], "error": None}
-    _log(f"detect start: {url}")
+    result: dict[str, Any] = {
+        "input": url,
+        "type": "unknown",
+        "variants": [],
+        "error": None,
+        "log": [],
+    }
+
+    def step(msg: str) -> None:
+        result["log"].append(msg)
+        _log(msg)
+
+    step(f"detect start: {url}")
 
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
@@ -68,46 +71,51 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
             r.raise_for_status()
             text = r.text
             final_url = str(r.url)
-        _log(f"fetched {final_url} status={r.status_code} len={len(text)}")
+        step(f"fetched {final_url} status={r.status_code} bytes={len(text)}")
     except Exception as exc:
-        _log(f"fetch failed: {exc}", "error")
+        step(f"fetch failed: {exc}")
         result["error"] = str(exc)
         return result
 
     # Direct M3U8?
     if "#EXTM3U" in text or url.lower().endswith(".m3u8") or "m3u8" in final_url.lower():
         parsed = _parse_m3u8(text, final_url)
-        _log(f"parsed as m3u8 type={parsed['type']} variants={len(parsed['variants'])}")
+        step(f"parsed as m3u8 type={parsed['type']} variants={len(parsed['variants'])}")
+        parsed["log"] = result["log"] + parsed.get("log", [])
         return parsed
 
     # Page: look for m3u8 URLs
     m3u8_urls = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', text, re.I)
     if not m3u8_urls:
-        # relative
         rel = re.findall(r'["\']([^"\']+\.m3u8[^"\']*)["\']', text, re.I)
         m3u8_urls = [urljoin(final_url, u) for u in rel]
-    _log(f"page scan found {len(m3u8_urls)} m3u8 candidates")
+    step(f"page scan found {len(m3u8_urls)} m3u8 candidates")
 
     if not m3u8_urls:
         result["type"] = "page"
         result["error"] = "No .m3u8 playlists found on the page. Paste an M3U8 URL directly."
+        step(result["error"])
         return result
 
-    # Prefer the first master-looking one; fetch and parse
     for murl in m3u8_urls[:3]:
         try:
+            step(f"fetching candidate {murl}")
             async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
                 mr = await client.get(murl, headers=headers)
                 mr.raise_for_status()
                 parsed = _parse_m3u8(mr.text, str(mr.url))
+                step(f"candidate parsed type={parsed['type']} variants={len(parsed['variants'])}")
                 if parsed["variants"]:
                     parsed["type"] = "master" if parsed["type"] == "master" else "media"
+                    parsed["log"] = result["log"]
                     return parsed
-        except Exception:
+        except Exception as exc:
+            step(f"candidate failed: {exc}")
             continue
 
     result["type"] = "page"
     result["error"] = "Found .m3u8 links but could not parse variants."
+    step(result["error"])
     return result
 
 

@@ -1966,6 +1966,11 @@
         method: "POST",
         body: JSON.stringify({ url }),
       });
+      // Show inline diagnostic log from the response
+      const pre = $("#stream-log");
+      if (pre && res.log) {
+        pre.textContent = (res.log || []).join("\n") || "(no steps)";
+      }
       if (res.error && !(res.variants || []).length) {
         if (status) status.textContent = res.error;
         return;
