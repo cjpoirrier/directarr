@@ -288,10 +288,15 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
 
         # Build header string for FFmpeg
         hdr_lines = []
-        if headers:
-            for k, v in headers.items():
-                if k.lower() in ("user-agent", "referer", "cookie", "origin"):
-                    hdr_lines.append(f"{k}: {v}")
+        effective_headers = dict(headers or {})
+        # Kisscloud / similar hosts require a Referer
+        if "kisscloud" in stream_url.lower() and "referer" not in {k.lower() for k in effective_headers}:
+            effective_headers["Referer"] = "https://kisscloud.online/"
+        if "user-agent" not in {k.lower() for k in effective_headers}:
+            effective_headers["User-Agent"] = USER_AGENT
+        for k, v in effective_headers.items():
+            if k.lower() in ("user-agent", "referer", "cookie", "origin"):
+                hdr_lines.append(f"{k}: {v}")
         header_arg = "\r\n".join(hdr_lines) + "\r\n" if hdr_lines else ""
 
         cmd = [
@@ -547,6 +552,15 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         step(f"browser error: {exc}")
         return result
 
+    # Prefer signed m3u8; drop embed pages and API endpoints from the list
+    cleaned = []
+    for u in found:
+        lu = u.lower()
+        if ".m3u8" in lu or "/cdn/hls/" in lu:
+            if u not in cleaned:
+                cleaned.append(u)
+    if cleaned:
+        found = cleaned
     for u in found[:10]:
         result["variants"].append({
             "url": u,
