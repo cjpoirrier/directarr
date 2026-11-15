@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install --with-deps chromium
 COPY app ./app
 # Static UI lives under app/static (copied with app/)
 # Run as root by default so bind-mounted ./config, ./downloads, ./staging
