@@ -310,41 +310,32 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 }
                 with _httpx.Client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
-                body = pr.text
-                import re as _re
-                stream_infs = _re.findall(
-                    r'#EXT-X-STREAM-INF:([^\n]+)\n([^\n]+)', body
-                )
-                video_urls = []
-                from urllib.parse import urljoin
-                for _, u in stream_infs:
-                    u = u.strip().strip('"')
-                    if u:
-                        full = u if u.startswith("http") else urljoin(stream_url, u)
-                        video_urls.append(full)
-                probe_note = (
-                    f"playlist {pr.status_code} len={len(body)} "
-                    f"video={video_urls[:2]}"
-                )
-                _log(probe_note)
-                # Test-fetch the first video variant
-                if video_urls:
-                    try:
-                        vr = client.get(video_urls[0], headers=probe_headers)
-                        vbody = vr.text[:300].replace("\n", " | ")
-                        probe_note += f" | variant0 {vr.status_code} len={len(vr.text)}: {vbody}"
-                        _log(f"variant0: {vr.status_code} {vbody[:200]}")
-                    except Exception as exc:
-                        probe_note += f" | variant0 failed: {exc}"
-                        _log(f"variant0 failed: {exc}")
-                # Test-fetch the first video variant if we have one
-                if video_urls:
-                    try:
-                        vr = client.get(video_urls[0], headers=probe_headers)
-                        vbody = vr.text[:200].replace("\n", " | ")
-                        probe_note += f" | variant0 {vr.status_code}: {vbody}"
-                    except Exception as exc:
-                        probe_note += f" | variant0 failed: {exc}"
+                    body = pr.text
+                    import re as _re
+                    stream_infs = _re.findall(
+                        r'#EXT-X-STREAM-INF:([^\n]+)\n([^\n]+)', body
+                    )
+                    video_urls = []
+                    from urllib.parse import urljoin
+                    for _, u in stream_infs:
+                        u = u.strip().strip('"')
+                        if u:
+                            full = u if u.startswith("http") else urljoin(stream_url, u)
+                            video_urls.append(full)
+                    probe_note = (
+                        f"playlist {pr.status_code} len={len(body)} "
+                        f"video={video_urls[:2]}"
+                    )
+                    _log(probe_note)
+                    if video_urls:
+                        try:
+                            vr = client.get(video_urls[0], headers=probe_headers)
+                            vbody = vr.text[:250].replace("\n", " | ")
+                            probe_note += f" | variant0 {vr.status_code} len={len(vr.text)}: {vbody}"
+                            _log(f"variant0: {vr.status_code} {vbody[:180]}")
+                        except Exception as exc:
+                            probe_note += f" | variant0 failed: {exc}"
+                            _log(f"variant0 failed: {exc}")
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
