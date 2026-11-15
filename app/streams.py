@@ -487,16 +487,17 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                                     import json as _json
                                     data = _json.loads(resp)
                                     step(f"getVideo JSON keys: {list(data.keys())[:10]}")
-                                    # look for file/sources
-                                    srcs = data.get("videoSources") or data.get("sources") or []
-                                    if isinstance(srcs, list):
-                                        for s in srcs[:5]:
-                                            if isinstance(s, dict) and s.get("file"):
-                                                step(f"source file: {str(s.get('file'))[:100]}")
+                                    # Prefer the signed m3u8
+                                    for key in ("securedLink", "videoSource"):
+                                        val = data.get(key)
+                                        if val and isinstance(val, str) and val.startswith("http"):
+                                            if val not in found:
+                                                found.append(val)
+                                                step(f"stream {key}: {val[:120]}")
                                     if data.get("ck"):
                                         step("has ck key")
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    step(f"json parse failed: {exc}")
                                 for m in _re.findall(r'https?://[^"\'\s<>]+', resp):
                                     if any(x in m.lower() for x in ["m3u8", "hls", ".mp4", "master"]):
                                         if m not in found:
