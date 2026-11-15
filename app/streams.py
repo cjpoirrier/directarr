@@ -470,8 +470,11 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                                 const r = await fetch("{api}", {{
                                     method: "POST",
                                     credentials: "include",
-                                    headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
-                                    body: "hash={vid}&r=" + encodeURIComponent(document.referrer || "")
+                                    headers: {{
+                                        "Content-Type": "application/x-www-form-urlencoded",
+                                        "X-Requested-With": "XMLHttpRequest"
+                                    }},
+                                    body: "hash={vid}&r=" + encodeURIComponent(location.href)
                                 }});
                                 return await r.text();
                             }}""")
