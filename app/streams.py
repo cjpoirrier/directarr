@@ -389,23 +389,24 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                                         "UPDATE downloads SET progress=? WHERE id=?",
                                         (int((i + 1) / limit * 90), job_id),
                                     )
-                        lst = seg_dir / "list.txt"
-                        lst.write_text("\n".join(f"file '{p.name}'" for p in paths))
+                        # Binary-concat the TS segments, then remux
+                        raw_ts = STAGING_DIR / f"{job_id}.raw.ts"
+                        with raw_ts.open("wb") as out_f:
+                            for p in paths:
+                                out_f.write(p.read_bytes())
                         out = STAGING_DIR / f"{job_id}.part.mkv"
                         cmd = [
                             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                            "-f", "concat", "-safe", "0",
-                            "-i", str(lst),
+                            "-f", "mpegts", "-i", str(raw_ts),
                             "-c", "copy",
                             "-bsf:a", "aac_adtstoasc",
                             str(out),
                         ]
                         result = subprocess.run(
-                            cmd, cwd=str(seg_dir),
-                            capture_output=True, text=True, timeout=600,
+                            cmd, capture_output=True, text=True, timeout=600,
                         )
                         if result.returncode != 0:
-                            raise RuntimeError(f"concat failed: {result.stderr[-300:]}")
+                            raise RuntimeError(f"remux failed: {result.stderr[-400:]}")
                         final = DOWNLOAD_DIR / (_safe_name(title, job_id) + ".mkv")
                         import shutil
                         shutil.move(str(out), str(final))
@@ -415,6 +416,14 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                                 (str(final), job_id),
                             )
                         _log(f"manual download complete: {final} ({final.stat().st_size} bytes)")
+                        # cleanup
+                        try:
+                            raw_ts.unlink()
+                            for p in paths:
+                                p.unlink()
+                            seg_dir.rmdir()
+                        except Exception:
+                            pass
                         return
             except Exception as exc:
                 _log(f"manual download failed: {exc}", "error")
