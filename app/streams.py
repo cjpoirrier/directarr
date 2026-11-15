@@ -383,11 +383,38 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             page = await context.new_page()
             page.on("request", on_request)
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-            await page.wait_for_timeout(4000)
+            step("page loaded, looking for play controls")
+            # Try common play / server buttons
+            for sel in [
+                "#player-option-1",
+                ".dooplay_player_option",
+                ".play-btn",
+                "button.play",
+                "[class*='play']",
+                "video",
+            ]:
+                try:
+                    el = await page.query_selector(sel)
+                    if el:
+                        await el.click(timeout=2000)
+                        step(f"clicked {sel}")
+                        break
+                except Exception:
+                    pass
+            # Give the player time to request the stream
+            await page.wait_for_timeout(8000)
+            # Also check iframes
+            for frame in page.frames:
+                try:
+                    await frame.wait_for_timeout(1000)
+                except Exception:
+                    pass
             await browser.close()
     except Exception as exc:
         result["error"] = str(exc)
