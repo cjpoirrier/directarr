@@ -214,11 +214,13 @@ async def grab_release(
     """Torznab grab handoff: queues a Directarr download job when Sonarr fetches the enclosure.
 
     Optional drive_file_id + title select a single resolved file from a Drive folder.
-    Returns a minimal .torrent so Sonarr treats the grab as successful; the real
-    file is downloaded by Directarr into the shared downloads folder.
+    API key is optional here — the enclosure URL is only known after a successful
+    authenticated Torznab search. This lets cached Sonarr results still grab.
     """
+    # Key is optional for grab; still validate if provided
     key = apikey or x_api_key or ""
-    require_key(key)
+    if key:
+        require_key(key)
     with connect() as db:
         row = db.execute("SELECT * FROM releases WHERE id=?", (release_id,)).fetchone()
     if not row:
@@ -233,10 +235,8 @@ async def grab_release(
     background_tasks.add_task(run_download, job_id, job_title, url, fid)
     add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=job_title)
 
-    # Build a minimal but valid bencoded torrent that MonoTorrent can parse.
-    # Keys in the info dict must be sorted for some decoders.
+    # Valid minimal bencoded torrent so MonoTorrent can parse it
     name_bytes = job_title.encode("utf-8", errors="replace")[:180] or b"file"
-    # Single piece of zeros is fine for a dummy
     pieces = b"\x00" * 20
     info = (
         b"d"
@@ -246,7 +246,6 @@ async def grab_release(
         b"6:pieces20:" + pieces +
         b"e"
     )
-    # Outer dict: announce + info (sorted)
     announce = b"http://localhost/announce"
     dummy = (
         b"d"
