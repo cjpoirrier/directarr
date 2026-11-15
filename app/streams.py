@@ -299,6 +299,29 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 hdr_lines.append(f"{k}: {v}")
         header_arg = "\r\n".join(hdr_lines) + "\r\n" if hdr_lines else ""
 
+        # Probe the playlist so we can see what FFmpeg will hit
+        if ".m3u8" in stream_url.lower():
+            try:
+                import httpx as _httpx
+                probe_headers = {
+                    "User-Agent": USER_AGENT,
+                    "Referer": effective_headers.get("Referer", "https://kisscloud.online/"),
+                }
+                with _httpx.Client(follow_redirects=True, timeout=15) as client:
+                    pr = client.get(stream_url, headers=probe_headers)
+                body = pr.text[:500].replace("\n", " | ")
+                with connect() as db:
+                    db.execute(
+                        "UPDATE downloads SET error=? WHERE id=?",
+                        (f"playlist probe {pr.status_code}: {body}", job_id),
+                    )
+            except Exception as exc:
+                with connect() as db:
+                    db.execute(
+                        "UPDATE downloads SET error=? WHERE id=?",
+                        (f"playlist probe failed: {exc}", job_id),
+                    )
+
         cmd = [
             "ffmpeg", "-y",
             "-hide_banner", "-loglevel", "error",
