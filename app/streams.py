@@ -372,10 +372,13 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         return result
 
     found = []
+    seen_urls = []
 
     async def on_request(req):
         u = req.url
-        if ".m3u8" in u.lower() or ".mp4" in u.lower():
+        if len(seen_urls) < 30 and not any(x in u for x in [".js", ".css", ".png", ".jpg", ".woff", "google", "analytics"]):
+            seen_urls.append(u.split("?")[0][:120])
+        if ".m3u8" in u.lower() or ".mp4" in u.lower() or "/video/" in u.lower() or "neocdn" in u.lower():
             if u not in found:
                 found.append(u)
                 step(f"captured {u}")
@@ -388,9 +391,10 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             )
             page = await context.new_page()
             page.on("request", on_request)
+            # Also watch frames as they appear
+            page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             step("page loaded, looking for play controls")
-            # Try common play / server buttons
             for sel in [
                 "#player-option-1",
                 ".dooplay_player_option",
@@ -407,14 +411,19 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                         break
                 except Exception:
                     pass
-            # Give the player time to request the stream
-            await page.wait_for_timeout(8000)
-            # Also check iframes
-            for frame in page.frames:
+            await page.wait_for_timeout(6000)
+            # Check for iframes and try to interact
+            frames = page.frames
+            step(f"frames: {len(frames)}")
+            for frame in frames:
                 try:
-                    await frame.wait_for_timeout(1000)
+                    if frame.url and frame.url != url and "about:" not in frame.url:
+                        step(f"frame: {frame.url[:100]}")
                 except Exception:
                     pass
+            await page.wait_for_timeout(4000)
+            if seen_urls:
+                step("sample requests: " + " | ".join(seen_urls[:8]))
             await browser.close()
     except Exception as exc:
         result["error"] = str(exc)
