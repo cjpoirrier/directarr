@@ -233,17 +233,26 @@ async def grab_release(
     background_tasks.add_task(run_download, job_id, job_title, url, fid)
     add_history("grab", f"Sonarr/Radarr grab queued job {job_id}", details=job_title)
 
-    # Minimal valid-looking torrent response so Sonarr accepts the grab.
-    # The actual media is downloaded by Directarr into the downloads volume.
-    dummy = (
-        b"d8:announce0:4:info"
-        b"d4:name" + str(len(job_title)).encode() + b":" + job_title.encode() +
-        b"12:piece lengthi16384e6:pieces0:ee"
+    # Minimal but structurally valid .torrent so Blackhole accepts the write.
+    # Directarr has already queued the real download above.
+    name_bytes = job_title.encode("utf-8", errors="replace")[:200]
+    # Build a tiny valid bencoded torrent: announce + info{name, piece length, pieces, length}
+    info = (
+        b"d"
+        b"6:lengthi1e"
+        b"4:name" + str(len(name_bytes)).encode() + b":" + name_bytes +
+        b"12:piece lengthi16384e"
+        b"6:pieces20:" + b"\x00" * 20 +
+        b"e"
     )
+    dummy = b"d8:announce0:4:infod" + info + b"ee"
     return Response(
         content=dummy,
         media_type="application/x-bittorrent",
-        headers={"Content-Disposition": f'attachment; filename="{job_id}.torrent"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{job_id}.torrent"',
+            "Content-Length": str(len(dummy)),
+        },
     )
 
 
