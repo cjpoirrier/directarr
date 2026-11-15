@@ -1,3 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Directarr</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="login-screen" class="login-screen">
+    <div class="login-card">
+      <h1>Directarr</h1>
+      <p class="hint">Sign in to continue</p>
+      <form id="login-form">
+        <label>Username
+          <input id="login-user" type="text" autocomplete="username" required />
+        </label>
+        <label>Password
+          <input id="login-pass" type="password" autocomplete="current-password" required />
+        </label>
+        <button class="btn primary" type="submit" style="width:100%;margin-top:0.75rem">Log in</button>
+      </form>
+      <p id="login-error" class="hint" style="color:var(--err,#f87171);margin-top:0.75rem"></p>
+    </div>
+  </div>
+
+  <div class="app" id="app-shell" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="logo">D</span>
+        <div>
+          <strong>Directarr</strong>
+          <small>Anime DDL Indexer</small>
+        </div>
+        <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+          <span class="menu-toggle-bars" aria-hidden="true"></span>
+        </button>
+      </div>
+      <nav id="sidebar-nav">
+        <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+        <button class="nav-btn" data-view="search">Search</button>
+        <button class="nav-btn" data-view="releases">Releases</button>
+        <button class="nav-btn" data-view="downloads">Downloads</button>
+        <button class="nav-btn" data-view="streams">Streams</button>
+        <button class="nav-btn" data-view="logs">Logs</button>
+        <button class="nav-btn" data-view="history">History</button>
+        <button class="nav-btn" data-view="stats">Stats</button>
+        <button class="nav-btn" data-view="sources">Indexers</button>
+        <button class="nav-btn" data-view="applications">Applications</button>
+        <button class="nav-btn" data-view="gdrive">Google Drive</button>
+        <button class="nav-btn" data-view="settings">Settings</button>
+        <button class="nav-btn" data-view="system">System</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="conn-status" class="pill muted">API key required</span>
+        <button type="button" class="btn sm" id="logout-btn" style="width:100%;margin-top:0.65rem">Log out</button>
+      </div>
+    </aside>
+    <div class="nav-backdrop" id="nav-backdrop" hidden></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button type="button" class="menu-toggle topbar-menu" id="topbar-menu" aria-label="Open menu">
+          <span class="menu-toggle-bars" aria-hidden="true"></span>
+        </button>
+        <h1 id="view-title">Dashboard</h1>
+      </header>
+
+      <section id="view-dashboard" class="view active">
+        <div class="cards">
+          <div class="card"><h3>Sources</h3><p id="stat-sources">—</p></div>
+          <div class="card"><h3>Releases</h3><p id="stat-releases">—</p></div>
+          <div class="card"><h3>Downloads</h3><p id="stat-downloads">—</p></div>
+          <div class="card"><h3>Google Drive</h3><p id="stat-gdrive">—</p></div>
+        </div>
+        <div class="panel">
+          <h2>Recent downloads</h2>
+          <div id="dash-downloads" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-search" class="view">
+        <div class="panel">
+          <form id="search-form" class="row">
+            <input id="search-q" type="search" placeholder="Search anime (e.g. frieren, rezero)" required />
+            <button class="btn primary" type="submit">Search</button>
+          </form>
+          <div class="filters" id="search-filters">
+            <span class="filters-label">Filters</span>
+            <label class="chip"><input type="checkbox" data-filter="1080p" /> 1080p</label>
+            <label class="chip"><input type="checkbox" data-filter="720p" /> 720p</label>
+            <label class="chip"><input type="checkbox" data-filter="2160p" /> 2160p</label>
+            <label class="chip"><input type="checkbox" data-filter="480p" /> 480p</label>
+            <label class="chip"><input type="checkbox" data-filter="dual" /> Dual Audio</label>
+            <label class="chip"><input type="checkbox" data-filter="multi" /> Multi Audio</label>
+            <label class="chip"><input type="checkbox" data-filter="hevc" /> HEVC / x265</label>
+            <label class="chip"><input type="checkbox" data-filter="av1" /> AV1</label>
+            <label class="chip"><input type="checkbox" data-filter="x264" /> x264</label>
+          </div>
+          <p class="hint">Filters append to the source query and refine results locally (resolution, dual audio, codec).</p>
+          <div id="search-results" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-releases" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Indexed releases</h2>
+            <button class="btn" id="refresh-releases">Refresh</button>
+          </div>
+          <div id="releases-table" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-downloads" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Download queue</h2>
+            <div class="row">
+              <span id="auto-refresh-label" class="hint">Auto-refresh on</span>
+              <button class="btn" id="refresh-downloads" type="button">Refresh</button>
+              <button class="btn" id="clear-finished-downloads" type="button" title="Remove completed, failed, and cancelled from the list">Clear finished</button>
+              <button class="btn danger" id="clear-all-downloads" type="button" title="Cancel active jobs and remove entire list">Clear all</button>
+            </div>
+          </div>
+          <div class="row download-bulk-actions" style="margin:0.5rem 0 0.75rem">
+            <button class="btn sm" id="dl-select-all" type="button">Select all</button>
+            <button class="btn sm" id="dl-select-none" type="button">Select none</button>
+            <button class="btn sm" id="dl-remove-selected" type="button" title="Remove selected rows from the list only">Remove selected</button>
+            <button class="btn sm danger" id="dl-delete-files" type="button" title="Delete selected files from disk (list stays)">Delete files</button>
+          </div>
+          <p class="hint">Remove selected = list only. Delete files = erase files on disk (separate action).</p>
+          <div id="downloads-table" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-streams" class="view">
+        <div class="panel">
+          <h2>Stream Detection</h2>
+          <p class="hint">Paste a page URL or a direct .m3u8 link. Directarr will look for HLS playlists and list available qualities.</p>
+          <form id="stream-detect-form" class="row" style="gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem" onsubmit="return false;">
+            <input id="stream-url" type="url" placeholder="https://example.com/episode or https://.../playlist.m3u8" style="flex:1;min-width:280px" />
+            <button class="btn primary" id="stream-detect-btn" type="button" onclick="window.directarrDetect && window.directarrDetect()">Detect</button>
+            <button class="btn" id="stream-capture-btn" type="button">Capture (browser)</button>
+          </form>
+          <div id="stream-status" class="hint" style="margin-top:0.5rem"></div>
+          <div id="stream-variants" class="table-wrap" style="margin-top:1rem"></div>
+          <div class="row between" style="margin-top:1.5rem">
+            <h3 style="margin:0">Detection log</h3>
+            <button class="btn sm" id="stream-log-refresh" type="button">Refresh log</button>
+          </div>
+          <pre id="stream-log" class="hint" style="background:var(--panel,#1a1a1a);padding:0.75rem;border-radius:6px;max-height:240px;overflow:auto;white-space:pre-wrap"></pre>
+        </div>
+      </section>
+
+      <section id="view-logs" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Logs</h2>
+            <button class="btn sm" id="logs-refresh" type="button">Refresh</button>
+          </div>
+          <p class="hint">Stream detection, playlist probes, and download errors.</p>
+          <pre id="logs-output" class="hint" style="background:var(--panel,#1a1a1a);padding:0.75rem;border-radius:6px;max-height:70vh;overflow:auto;white-space:pre-wrap;font-size:12px"></pre>
+        </div>
+      </section>
+
+      <section id="view-sources" class="view">
+        <div class="panel">
+          <div class="indexer-toolbar row between">
+            <div class="row">
+              <button class="btn primary" id="add-source-btn" type="button">+ Add Indexer</button>
+              <button class="btn" id="reload-sources" type="button">Sync / Reload</button>
+            </div>
+            <div class="row">
+              <span id="indexer-stats" class="hint">Indexers 0 · Enabled 0</span>
+            </div>
+          </div>
+          <p class="hint">Manage direct-download indexers like Prowlarr. Enable for Search &amp; Sonarr Torznab.</p>
+          <div id="sources-table" class="table-wrap"></div>
+          <div class="indexer-legend row" style="margin-top:0.75rem;gap:1rem">
+            <span class="legend-item"><span class="status-dot ok"></span> Enabled</span>
+            <span class="legend-item"><span class="status-dot muted"></span> Disabled</span>
+            <span class="legend-item"><span class="proto-pill direct">direct</span> Direct download</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-gdrive" class="view">
+        <div class="panel">
+          <h2>Authorization</h2>
+          <div id="gdrive-status" class="muted">Loading…</div>
+          <div class="row" style="margin-top:1rem">
+            <button class="btn" id="gdrive-auth-url">Get auth URL</button>
+            <input id="gdrive-code" type="text" placeholder="Paste OAuth code" />
+            <button class="btn primary" id="gdrive-auth-code">Submit code</button>
+          </div>
+          <p class="hint">Place Desktop OAuth client JSON at <code>config/credentials.json</code> first.</p>
+        </div>
+        <div class="panel">
+          <h2>Resolve share link</h2>
+          <form id="resolve-form" class="row">
+            <input id="resolve-url" type="url" placeholder="https://drive.google.com/drive/folders/..." required />
+            <button class="btn primary" type="submit">Resolve</button>
+          </form>
+          <div id="resolve-results" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view">
+        <div class="settings-layout">
+          <aside class="settings-nav" id="settings-nav">
+            <button type="button" class="settings-tab active" data-settings-tab="general">General</button>
+            <button type="button" class="settings-tab" data-settings-tab="ui">UI</button>
+            <button type="button" class="settings-tab" data-settings-tab="notifications">Notifications</button>
+            <button type="button" class="settings-tab" data-settings-tab="tags">Tags</button>
+            <button type="button" class="settings-tab" data-settings-tab="profiles">Sync Profiles</button>
+          </aside>
+          <div class="settings-panels">
+            <!-- General (Host + Security) — editable -->
+            <div class="settings-panel active" id="settings-panel-general">
+              <form id="general-settings-form">
+                <div class="panel">
+                  <div class="row between">
+                    <h2>Host</h2>
+                    <button type="submit" class="btn primary" id="save-general-settings">Save Changes</button>
+                  </div>
+                  <div class="settings-grid">
+                    <div class="settings-label">Bind Address</div>
+                    <div class="settings-field">
+                      <input id="settings-bind" type="text" placeholder="0.0.0.0" autocomplete="off" />
+                      <p class="hint">Stored preference. Actual listen address is set by Docker / uvicorn; restart to apply a new bind.</p>
+                    </div>
+                    <div class="settings-label">Port Number</div>
+                    <div class="settings-field">
+                      <input id="settings-port" type="number" min="1" max="65535" placeholder="8787" />
+                      <p class="hint">Requires container/process restart to take effect.</p>
+                    </div>
+                    <div class="settings-label">URL Base</div>
+                    <div class="settings-field">
+                      <input id="settings-url-base" type="text" placeholder="/" autocomplete="off" />
+                      <p class="hint">Path prefix when behind a reverse proxy (e.g. <code>/directarr</code>). Empty = root.</p>
+                    </div>
+                    <div class="settings-label">Allowed Hosts</div>
+                    <div class="settings-field">
+                      <input id="settings-allowed-hosts" type="text" placeholder="example.com, media.lan" autocomplete="off" />
+                      <p class="hint">Comma-separated hostnames for outbound download allow-lists (optional).</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
+                  <h2>Security</h2>
+                  <div class="settings-grid">
+                    <div class="settings-label">Authentication</div>
+                    <div class="settings-field">
+                      <select id="settings-auth-mode">
+                        <option value="forms">Forms (login required)</option>
+                        <option value="none">None (open UI)</option>
+                      </select>
+                      <p class="hint">Forms requires username/password for the web UI. API key still works for Torznab clients either way.</p>
+                    </div>
+                    <div class="settings-label">Authentication Required</div>
+                    <div class="settings-field">
+                      <label class="switch">
+                        <input type="checkbox" id="settings-auth-required" checked />
+                        <span class="slider"></span>
+                      </label>
+                      <p class="hint">Toggle mirrors Authentication mode (on = forms, off = none).</p>
+                    </div>
+                    <div class="settings-label">Username</div>
+                    <div class="settings-field">
+                      <input id="settings-auth-user" type="text" autocomplete="username" />
+                    </div>
+                    <div class="settings-label">Password</div>
+                    <div class="settings-field">
+                      <input id="settings-new-password" type="password" placeholder="Leave blank to keep current" autocomplete="new-password" />
+                      <p class="hint">To change password, enter a new one below and your current password for confirmation.</p>
+                    </div>
+                    <div class="settings-label">Current Password</div>
+                    <div class="settings-field">
+                      <input id="settings-current-password" type="password" placeholder="Required only when changing password" autocomplete="current-password" />
+                    </div>
+                    <div class="settings-label">API Key</div>
+                    <div class="settings-field">
+                      <div class="api-key-row">
+                        <input id="api-key" type="text" readonly autocomplete="off" spellcheck="false" />
+                        <button type="button" class="btn icon-btn" id="copy-api-key" title="Copy API key">Copy</button>
+                        <button type="button" class="btn icon-btn danger" id="regen-api-key" title="Regenerate API key">Regen</button>
+                      </div>
+                      <p class="hint">Used by Sonarr/Radarr as the Torznab API key. Regenerating invalidates the old key immediately.</p>
+                    </div>
+                    <div class="settings-label">Certificate Validation</div>
+                    <div class="settings-field">
+                      <code>Enabled</code>
+                      <p class="hint">HTTPS certificate validation for outbound requests. Do not disable unless you understand the risks.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
+                  <h2>API / Torznab</h2>
+                  <div class="settings-grid">
+                    <div class="settings-label">Torznab URL</div>
+                    <div class="settings-field">
+                      <div class="api-key-row">
+                        <code id="torznab-url" class="url-box">http://localhost:8787/api?apikey=YOUR_KEY</code>
+                        <button type="button" class="btn icon-btn" id="copy-torznab" title="Copy Torznab URL">Copy</button>
+                        <button type="button" class="btn icon-btn" id="refresh-settings" title="Refresh">Refresh</button>
+                      </div>
+                      <p class="hint">In Sonarr/Radarr: Settings → Indexers → Add → Torznab. Paste this URL and the API key above. Or use <strong>Applications</strong> to register the *arr instance here.</p>
+                    </div>
+                  </div>
+                </div>
+              </form>
+            </div>
+
+            <!-- UI -->
+            <div class="settings-panel" id="settings-panel-ui">
+              <div class="panel">
+                <h2>UI</h2>
+                <div class="settings-grid">
+                  <div class="settings-label">Theme</div>
+                  <div class="settings-field">
+                    <select id="settings-theme" disabled>
+                      <option value="dark" selected>Dark (Sonarr / Prowlarr style)</option>
+                      <option value="light">Light (coming soon)</option>
+                    </select>
+                    <p class="hint">Dark theme matches Sonarr and Prowlarr. Additional themes planned.</p>
+                  </div>
+                  <div class="settings-label">First Day of Week</div>
+                  <div class="settings-field">
+                    <select id="settings-first-day" disabled>
+                      <option value="sunday">Sunday</option>
+                      <option value="monday" selected>Monday</option>
+                    </select>
+                    <p class="hint">Used by calendar views when added.</p>
+                  </div>
+                  <div class="settings-label">Short Date Format</div>
+                  <div class="settings-field">
+                    <code>YYYY-MM-DD</code>
+                  </div>
+                  <div class="settings-label">Long Date Format</div>
+                  <div class="settings-field">
+                    <code>dddd, MMMM D YYYY</code>
+                  </div>
+                  <div class="settings-label">Time Format</div>
+                  <div class="settings-field">
+                    <code>24h</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Notifications -->
+            <div class="settings-panel" id="settings-panel-notifications">
+              <div class="panel">
+                <div class="row between">
+                  <h2>Notifications</h2>
+                  <button type="button" class="btn primary" id="add-notification-btn" disabled>+ Add</button>
+                </div>
+                <p class="hint">Connect Discord, Telegram, email, or webhooks when downloads complete or fail. Notification providers are not wired yet — this tab is ready for future integrations.</p>
+                <div id="notifications-list" class="empty-state">
+                  <p class="muted">No notification connections configured.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tags -->
+            <div class="settings-panel" id="settings-panel-tags">
+              <div class="panel">
+                <div class="row between">
+                  <h2>Tags</h2>
+                  <button type="button" class="btn primary" id="add-tag-btn" disabled>+ Add</button>
+                </div>
+                <p class="hint">Tags can group indexers, notification rules, and download profiles (Sonarr-style). Tag management will be available in a later release.</p>
+                <div id="tags-list" class="empty-state">
+                  <p class="muted">No tags defined.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sync Profiles -->
+            <div class="settings-panel" id="settings-panel-profiles">
+              <div class="panel">
+                <div class="row between">
+                  <h2>Sync Profiles</h2>
+                  <button type="button" class="btn primary" id="add-sync-profile-btn">+ Add</button>
+                </div>
+                <p class="hint">Profiles control what gets synced when an Application (Sonarr/Radarr) is linked — RSS, automatic search, interactive search.</p>
+                <div id="sync-profiles-table" class="table-wrap"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-applications" class="view">
+        <div class="panel">
+          <div class="row between">
+            <div>
+              <h2>Applications</h2>
+              <p class="hint" style="margin:0.25rem 0 0">Link Sonarr, Radarr, and other *arr apps so Directarr can push indexer settings (Prowlarr-style).</p>
+            </div>
+            <button type="button" class="btn primary" id="add-application-btn">+ Add</button>
+          </div>
+          <div id="applications-table" class="table-wrap" style="margin-top:1rem"></div>
+        </div>
+      </section>
+
+      <section id="view-history" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>History</h2>
+            <div class="row">
+              <select id="history-filter">
+                <option value="">All events</option>
+                <option value="download">Downloads</option>
+                <option value="application">Applications</option>
+                <option value="settings">Settings</option>
+                <option value="sync_profile">Sync profiles</option>
+                <option value="system">System</option>
+              </select>
+              <button type="button" class="btn" id="refresh-history">Refresh</button>
+              <button type="button" class="btn danger" id="clear-history">Clear</button>
+            </div>
+          </div>
+          <div id="history-table" class="table-wrap" style="margin-top:0.75rem"></div>
+        </div>
+      </section>
+
+      <section id="view-stats" class="view">
+        <div class="cards" id="stats-summary-cards">
+          <div class="card"><h3>Total downloads</h3><p id="stats-total-dl">—</p></div>
+          <div class="card"><h3>Completed</h3><p id="stats-completed">—</p></div>
+          <div class="card"><h3>Failed / cancelled</h3><p id="stats-failed">—</p></div>
+          <div class="card"><h3>Indexed releases</h3><p id="stats-releases">—</p></div>
+        </div>
+        <div class="panel">
+          <div class="row between">
+            <h2>Downloads by status</h2>
+            <button type="button" class="btn" id="refresh-stats">Refresh</button>
+          </div>
+          <div id="stats-by-status" class="table-wrap"></div>
+        </div>
+        <div class="panel">
+          <h2>Releases by indexer (source)</h2>
+          <p class="hint">Where indexed results come from. Useful to see which DDL indexers are contributing the most.</p>
+          <div id="stats-by-source" class="table-wrap"></div>
+        </div>
+        <div class="panel">
+          <h2>Recent download activity</h2>
+          <div id="stats-recent" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-system" class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2>Status</h2>
+            <button class="btn" id="refresh-system" type="button">Refresh</button>
+          </div>
+          <div id="system-status" class="settings-grid" style="margin-top:0.75rem"></div>
+        </div>
+        <div class="panel">
+          <h2>Health</h2>
+          <div id="system-health" class="muted">Loading…</div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+
+  <div id="add-indexer-modal" class="modal hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="row between">
+        <h2>Add Indexer</h2>
+        <button type="button" class="btn sm" id="add-indexer-close">✕</button>
+      </div>
+      <div class="indexer-search-bar">
+        <input id="catalog-search" type="search" placeholder="Search indexers" />
+      </div>
+      <div class="indexer-filters row">
+        <label class="filter-field">Protocol
+          <select id="catalog-filter-protocol">
+            <option value="">All</option>
+            <option value="direct">direct</option>
+          </select>
+        </label>
+        <label class="filter-field">Language
+          <select id="catalog-filter-language">
+            <option value="">All</option>
+            <option value="en-US">en-US</option>
+          </select>
+        </label>
+        <label class="filter-field">Privacy
+          <select id="catalog-filter-privacy">
+            <option value="">All</option>
+            <option value="public">Public</option>
+            <option value="private">Private</option>
+          </select>
+        </label>
+        <label class="filter-field">Categories
+          <select id="catalog-filter-category">
+            <option value="">All</option>
+            <option value="TV">TV</option>
+            <option value="Anime">Anime</option>
+          </select>
+        </label>
+      </div>
+      <div class="info-banner">
+        Directarr ships preset direct-download indexers (anime DDL sites). Pick one below, configure, and enable it for Search and Sonarr Torznab. You can also use Generic HTML for any public listing site.
+      </div>
+      <div id="adapter-catalog" class="table-wrap catalog-scroll"></div>
+      <div id="adapter-settings-form" class="hidden catalog-config"></div>
+      <div class="row between" style="margin-top:0.75rem">
+        <span id="catalog-count" class="hint">0 indexer(s) available</span>
+        <button type="button" class="btn" id="add-indexer-close-2">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="queue-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="row between">
+        <h2 id="queue-modal-title">Drive files</h2>
+        <button type="button" class="btn sm" id="queue-modal-close">Close</button>
+      </div>
+      <p class="hint" id="queue-modal-hint"></p>
+      <div class="row" style="margin:0.75rem 0; flex-wrap:wrap; gap:0.5rem">
+        <button type="button" class="btn sm" id="queue-modal-all">Select all</button>
+        <button type="button" class="btn sm" id="queue-modal-none">Select none</button>
+        <button type="button" class="btn sm primary" id="queue-modal-download">Download selected</button>
+        <button type="button" class="btn sm primary" id="queue-modal-download-all">Download all</button>
+      </div>
+      <div id="queue-modal-list" class="table-wrap"></div>
+    </div>
+  </div>
+
+  <div id="application-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="row between">
+        <h2 id="application-modal-title">Add Application</h2>
+        <button type="button" class="btn sm" id="application-modal-close">✕</button>
+      </div>
+      <form id="application-form" class="settings-grid" style="margin-top:1rem">
+        <input type="hidden" id="app-edit-id" value="" />
+        <div class="settings-label">Type</div>
+        <div class="settings-field">
+          <select id="app-type" required>
+            <option value="sonarr">Sonarr</option>
+            <option value="radarr">Radarr</option>
+            <option value="lidarr">Lidarr</option>
+            <option value="readarr">Readarr</option>
+            <option value="whisparr">Whisparr</option>
+          </select>
+        </div>
+        <div class="settings-label">Name</div>
+        <div class="settings-field">
+          <input id="app-name" type="text" placeholder="Sonarr" required />
+        </div>
+        <div class="settings-label">URL</div>
+        <div class="settings-field">
+          <input id="app-base-url" type="url" placeholder="http://sonarr:8989" required />
+          <p class="hint">Base URL of the *arr instance (no trailing path).</p>
+        </div>
+        <div class="settings-label">API Key</div>
+        <div class="settings-field">
+          <input id="app-api-key" type="text" placeholder="From *arr Settings → General → Security" autocomplete="off" />
+        </div>
+        <div class="settings-label">Sync Level</div>
+        <div class="settings-field">
+          <select id="app-sync-level">
+            <option value="fullSync">Full Sync</option>
+            <option value="addOnly">Add and Remove Only</option>
+          </select>
+        </div>
+        <div class="settings-label">Sync Profile</div>
+        <div class="settings-field">
+          <select id="app-sync-profile"></select>
+        </div>
+        <div class="settings-label">Enabled</div>
+        <div class="settings-field">
+          <label class="switch">
+            <input type="checkbox" id="app-enabled" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-label">Tags</div>
+        <div class="settings-field">
+          <input id="app-tags" type="text" placeholder="optional, comma-separated" />
+        </div>
+      </form>
+      <div class="row between" style="margin-top:1.25rem">
+        <button type="button" class="btn" id="app-test-btn">Test</button>
+        <div class="row">
+          <button type="button" class="btn" id="application-modal-cancel">Cancel</button>
+          <button type="button" class="btn primary" id="application-modal-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="sync-profile-modal" class="modal hidden">
     <div class="modal-card">
       <div class="row between">
@@ -34,9 +635,8 @@
       </div>
     </div>
   </div>
-​
+
   <div id="toast" class="toast hidden"></div>
   <script src="/static/app.js"></script>
 </body>
 </html>
-​
