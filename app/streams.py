@@ -397,6 +397,27 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
+            # Inject capture hooks before any page script runs
+            await page.add_init_script("""
+                window.__directarr_found = [];
+                function _check(u) {
+                    if (!u) return;
+                    const s = String(u);
+                    if (s.includes('.m3u8') || s.includes('/cdn/hls/') || s.includes('master.txt') || s.includes('do=getVideo')) {
+                        if (!window.__directarr_found.includes(s)) window.__directarr_found.push(s);
+                    }
+                }
+                const _fetch = window.fetch;
+                window.fetch = function(input, init) {
+                    try { _check(typeof input === 'string' ? input : input && input.url); } catch(e) {}
+                    return _fetch.apply(this, arguments);
+                };
+                const _open = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    try { _check(url); } catch(e) {}
+                    return _open.apply(this, arguments);
+                };
+            """)
             page.on("request", on_request)
             # Also watch frames as they appear
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
@@ -456,6 +477,15 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             await page.wait_for_timeout(2000)
             if seen_urls:
                 step("sample requests: " + " | ".join(seen_urls[:8]))
+            # Pull URLs collected by the injected script
+            try:
+                injected = await page.evaluate("() => window.__directarr_found || []")
+                for u in injected:
+                    if u not in found:
+                        found.append(u)
+                        step(f"injected found {u}")
+            except Exception:
+                pass
             await browser.close()
     except Exception as exc:
         result["error"] = str(exc)
