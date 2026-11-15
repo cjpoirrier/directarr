@@ -310,13 +310,27 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 }
                 with _httpx.Client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
-                body = pr.text[:1200].replace("\n", " | ")
-                # Extract video variant lines if present
+                body = pr.text
                 import re as _re
-                variants = _re.findall(r'#EXT-X-STREAM-INF:[^\n|]*\|?\s*(https?://[^\s|]+)', pr.text)
-                if not variants:
-                    variants = _re.findall(r'(https?://[^\s]+)', pr.text)
-                probe_note = f"playlist {pr.status_code} variants={variants[:3]} body={body[:600]}"
+                stream_infs = _re.findall(
+                    r'#EXT-X-STREAM-INF:([^\n]+)\n([^\n]+)', body
+                )
+                video_urls = [u.strip().strip('"') for _, u in stream_infs if "http" in u]
+                # Also grab any non-subtitle media URIs
+                media_uris = _re.findall(r'URI="([^"]+)"', body)
+                probe_note = (
+                    f"playlist {pr.status_code} len={len(body)} "
+                    f"video={video_urls[:3]} "
+                    f"uris={media_uris[:2]}"
+                )
+                # Test-fetch the first video variant if we have one
+                if video_urls:
+                    try:
+                        vr = client.get(video_urls[0], headers=probe_headers)
+                        vbody = vr.text[:200].replace("\n", " | ")
+                        probe_note += f" | variant0 {vr.status_code}: {vbody}"
+                    except Exception as exc:
+                        probe_note += f" | variant0 failed: {exc}"
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
