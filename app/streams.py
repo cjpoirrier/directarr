@@ -472,11 +472,17 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                             }}""")
                             step(f"getVideo response length: {len(resp or '')}")
                             if resp:
+                                step("getVideo snippet: " + resp[:200].replace("\n", " "))
                                 import re as _re
-                                for m in _re.findall(r'https?://[^"\'\s]+(?:m3u8|master\.txt|/cdn/hls/)[^"\'\s]*', resp):
-                                    if m not in found:
-                                        found.append(m)
-                                        step(f"getVideo found {m}")
+                                # Look for any JSON-looking or API URLs
+                                for m in _re.findall(r'https?://[^"\'\s<>]+', resp):
+                                    if any(x in m.lower() for x in ["m3u8", "hls", "getvideo", "source", "playlist", ".mp4"]):
+                                        if m not in found:
+                                            found.append(m)
+                                            step(f"getVideo url {m}")
+                                # Also look for data endpoints
+                                for m in _re.findall(r'["\']([^"\']*(?:getVideo|sources|playlist|m3u8)[^"\']*)["\']', resp, _re.I):
+                                    step(f"getVideo ref {m[:120]}")
                         except Exception as exc:
                             step(f"getVideo fetch failed: {exc}")
                     for sel in ["video", ".jw-icon-play", "[class*='play']", "button"]:
