@@ -343,8 +343,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                             if seg:
                                 sr = client.get(seg.group(1), headers=probe_headers)
                                 ctype = sr.headers.get("content-type", "")
-                                probe_note += f" | seg {sr.status_code} type={ctype} len={len(sr.content)}"
-                                _log(f"segment: {sr.status_code} {ctype} {len(sr.content)} bytes")
+                                start = sr.text[:150].replace("\n", " ")
+                                probe_note += f" | seg {sr.status_code} type={ctype} len={len(sr.content)} start={start}"
+                                _log(f"segment: {sr.status_code} {ctype} {len(sr.content)} bytes start={start}")
                         except Exception as exc:
                             _log(f"segment probe failed: {exc}")
             except Exception as exc:
