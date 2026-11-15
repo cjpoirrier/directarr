@@ -362,8 +362,14 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 }
                 with _httpx.Client(follow_redirects=True, timeout=30) as client:
                     master = client.get(stream_url, headers=probe_headers).text
-                    # get first variant
                     import re as _re
+                    # Subtitle tracks
+                    sub_tracks = _re.findall(
+                        r'#EXT-X-MEDIA:TYPE=SUBTITLES[^\n]*LANGUAGE="([^"]+)"[^\n]*NAME="([^"]+)"[^\n]*URI="([^"]+)"',
+                        master,
+                    )
+                    _log(f"subtitles found: {len(sub_tracks)}")
+                    # get first variant
                     m = _re.search(r'#EXT-X-STREAM-INF:[^\n]+\n([^\n]+)', master)
                     if m:
                         variant_url = m.group(1).strip()
@@ -394,20 +400,41 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                         with raw_ts.open("wb") as out_f:
                             for p in paths:
                                 out_f.write(p.read_bytes())
+                        # Download subtitle tracks (best-effort)
+                        sub_files = []
+                        for lang, name, uri in sub_tracks[:6]:
+                            try:
+                                suri = uri if uri.startswith("http") else urljoin(stream_url, uri)
+                                sr = client.get(suri, headers=probe_headers)
+                                if sr.status_code == 200 and len(sr.content) > 20:
+                                    sp = STAGING_DIR / f"{job_id}_{lang}.vtt"
+                                    sp.write_bytes(sr.content)
+                                    sub_files.append((lang, name, sp))
+                                    _log(f"subtitle {lang}: {len(sr.content)} bytes")
+                            except Exception as exc:
+                                _log(f"subtitle {lang} failed: {exc}")
                         out = STAGING_DIR / f"{job_id}.part.mkv"
                         cmd = [
                             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                             "-f", "mpegts", "-i", str(raw_ts),
-                            "-c", "copy",
-                            "-bsf:a", "aac_adtstoasc",
-                            str(out),
                         ]
+                        for lang, name, sp in sub_files:
+                            cmd += ["-i", str(sp)]
+                        cmd += ["-map", "0:v", "-map", "0:a?"]
+                        for i in range(len(sub_files)):
+                            cmd += ["-map", str(i + 1)]
+                        cmd += ["-c", "copy", "-c:s", "srt", "-bsf:a", "aac_adtstoasc"]
+                        for i, (lang, name, _) in enumerate(sub_files):
+                            cmd += [f"-metadata:s:s:{i}", f"language={lang}", f"-metadata:s:s:{i}", f"title={name}"]
+                        cmd += [str(out)]
                         result = subprocess.run(
                             cmd, capture_output=True, text=True, timeout=600,
                         )
                         if result.returncode != 0:
                             raise RuntimeError(f"remux failed: {result.stderr[-400:]}")
-                        final = DOWNLOAD_DIR / (_safe_name(title, job_id) + ".mkv")
+                        # Prefer a clean title; fall back to job id
+                        nice = _safe_name(title if title and title != "captured" else "episode", job_id)
+                        final = DOWNLOAD_DIR / (nice + ".mkv")
                         import shutil
                         shutil.move(str(out), str(final))
                         with connect() as db:
@@ -588,6 +615,13 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             step("page loaded, looking for play controls")
+            try:
+                page_title = await page.title()
+                if page_title:
+                    result["title"] = page_title.strip()
+                    step(f"page title: {page_title[:80]}")
+            except Exception:
+                pass
             for sel in [
                 "#player-option-1",
                 ".dooplay_player_option",
