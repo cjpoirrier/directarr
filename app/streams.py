@@ -378,10 +378,16 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         u = req.url
         if len(seen_urls) < 30 and not any(x in u for x in [".js", ".css", ".png", ".jpg", ".woff", "google", "analytics"]):
             seen_urls.append(u.split("?")[0][:120])
-        if ".m3u8" in u.lower() or ".mp4" in u.lower() or "/video/" in u.lower() or "neocdn" in u.lower():
+        if ".m3u8" in u.lower() or ".mp4" in u.lower():
             if u not in found:
                 found.append(u)
-                step(f"captured {u}")
+                step(f"captured media {u}")
+        elif "neocdn" in u.lower() and u.endswith(".html"):
+            pass  # subtitle tracks, skip
+        elif "/video/" in u.lower() and "kisscloud" in u.lower():
+            if u not in found:
+                found.append(u)
+                step(f"captured embed {u}")
 
     try:
         async with async_playwright() as p:
@@ -415,13 +421,38 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             # Check for iframes and try to interact
             frames = page.frames
             step(f"frames: {len(frames)}")
+            kisscloud = None
             for frame in frames:
                 try:
                     if frame.url and frame.url != url and "about:" not in frame.url:
                         step(f"frame: {frame.url[:100]}")
+                        if "kisscloud" in frame.url or "/video/" in frame.url:
+                            kisscloud = frame.url
                 except Exception:
                     pass
-            await page.wait_for_timeout(4000)
+            # If we found an embed iframe, open it directly and watch longer
+            if kisscloud:
+                step(f"opening embed directly: {kisscloud[:80]}")
+                page2 = await context.new_page()
+                page2.on("request", on_request)
+                try:
+                    await page2.goto(kisscloud, wait_until="domcontentloaded", timeout=15000)
+                    await page2.wait_for_timeout(8000)
+                    # try clicking play inside the embed
+                    for sel in ["video", ".jw-icon-play", "[class*='play']", "button"]:
+                        try:
+                            el = await page2.query_selector(sel)
+                            if el:
+                                await el.click(timeout=1500)
+                                step(f"embed clicked {sel}")
+                                break
+                        except Exception:
+                            pass
+                    await page2.wait_for_timeout(6000)
+                except Exception as exc:
+                    step(f"embed open failed: {exc}")
+                await page2.close()
+            await page.wait_for_timeout(2000)
             if seen_urls:
                 step("sample requests: " + " | ".join(seen_urls[:8]))
             await browser.close()
