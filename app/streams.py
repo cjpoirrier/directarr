@@ -41,8 +41,18 @@ def get_recent_logs() -> list[str]:
 
 
 def _safe_name(title: str, job_id: str) -> str:
-    base = re.sub(r"[^\w\s\-_.]", "_", (title or "stream").strip())[:180]
-    return f"{base or 'stream'}_{job_id[:8]}"
+    """Clean a page title into a filesystem-safe episode name.
+
+    Drops site names, 'English Subbed', and the job id.
+    """
+    t = (title or "episode").strip()
+    # Drop common site suffixes
+    t = re.sub(r"\s*[|_-]\s*(MyAsiantv|AniWave|KissAnime|Gogoanime).*$", "", t, flags=re.I)
+    t = re.sub(r"\s*English Subbed\s*", " ", t, flags=re.I)
+    t = re.sub(r"\s*\(\d{4}\)\s*", " ", t)
+    t = re.sub(r"[^\w\s\-_.]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return (t or "episode")[:120]
 
 
 async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any]:
@@ -406,11 +416,14 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                             try:
                                 suri = uri if uri.startswith("http") else urljoin(stream_url, uri)
                                 sr = client.get(suri, headers=probe_headers)
-                                if sr.status_code == 200 and len(sr.content) > 20:
-                                    sp = STAGING_DIR / f"{job_id}_{lang}.vtt"
+                                _log(f"subtitle {lang} status={sr.status_code} len={len(sr.content)} type={sr.headers.get('content-type','')}")
+                                if sr.status_code == 200 and len(sr.content) > 50:
+                                    # Save raw; ffmpeg can often read vtt/srt even if extension is wrong
+                                    ext = ".vtt" if b"WEBVTT" in sr.content[:20] or b"-->" in sr.content[:500] else ".srt"
+                                    sp = STAGING_DIR / f"{job_id}_{lang}{ext}"
                                     sp.write_bytes(sr.content)
                                     sub_files.append((lang, name, sp))
-                                    _log(f"subtitle {lang}: {len(sr.content)} bytes")
+                                    _log(f"subtitle {lang} saved {ext}")
                             except Exception as exc:
                                 _log(f"subtitle {lang} failed: {exc}")
                         out = STAGING_DIR / f"{job_id}.part.mkv"
@@ -432,7 +445,6 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                         )
                         if result.returncode != 0:
                             raise RuntimeError(f"remux failed: {result.stderr[-400:]}")
-                        # Prefer a clean title; fall back to job id
                         nice = _safe_name(title if title and title != "captured" else "episode", job_id)
                         final = DOWNLOAD_DIR / (nice + ".mkv")
                         import shutil
