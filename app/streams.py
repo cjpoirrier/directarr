@@ -351,6 +351,68 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
+        # For kisscloud-style playlists, download segments ourselves
+        if "kisscloud" in stream_url.lower() and ".m3u8" in stream_url.lower():
+            try:
+                import httpx as _httpx
+                from urllib.parse import urljoin
+                probe_headers = {
+                    "User-Agent": USER_AGENT,
+                    "Referer": "https://kisscloud.online/",
+                }
+                with _httpx.Client(follow_redirects=True, timeout=30) as client:
+                    master = client.get(stream_url, headers=probe_headers).text
+                    # get first variant
+                    import re as _re
+                    m = _re.search(r'#EXT-X-STREAM-INF:[^\n]+\n([^\n]+)', master)
+                    if m:
+                        variant_url = m.group(1).strip()
+                        if not variant_url.startswith("http"):
+                            variant_url = urljoin(stream_url, variant_url)
+                        variant = client.get(variant_url, headers=probe_headers).text
+                        segs = _re.findall(r'(https?://[^\s]+)', variant)
+                        _log(f"manual: {len(segs)} segments")
+                        # download first 30 segments as a test
+                        seg_dir = STAGING_DIR / f"{job_id}_segs"
+                        seg_dir.mkdir(exist_ok=True)
+                        paths = []
+                        for i, su in enumerate(segs[:30]):
+                            if is_cancelled(job_id):
+                                raise DownloadCancelled("Cancelled")
+                            r = client.get(su, headers=probe_headers)
+                            p = seg_dir / f"{i:04d}.ts"
+                            p.write_bytes(r.content)
+                            paths.append(p)
+                            if i % 5 == 0:
+                                with connect() as db:
+                                    db.execute(
+                                        "UPDATE downloads SET progress=? WHERE id=?",
+                                        (int(i / 30 * 80), job_id),
+                                    )
+                        # concat list
+                        lst = seg_dir / "list.txt"
+                        lst.write_text("\n".join(f"file '{p}'" for p in paths))
+                        out = STAGING_DIR / f"{job_id}.part.mkv"
+                        cmd = [
+                            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                            "-f", "concat", "-safe", "0", "-i", str(lst),
+                            "-c", "copy", str(out),
+                        ]
+                        subprocess.run(cmd, check=True, timeout=60)
+                        final = DOWNLOAD_DIR / (_safe_name(title, job_id) + ".mkv")
+                        import shutil
+                        shutil.move(str(out), str(final))
+                        with connect() as db:
+                            db.execute(
+                                "UPDATE downloads SET status='completed', progress=100, path=? WHERE id=?",
+                                (str(final), job_id),
+                            )
+                        _log(f"manual download complete: {final}")
+                        return
+            except Exception as exc:
+                _log(f"manual download failed: {exc}", "error")
+                # fall through to normal ffmpeg
+
         cmd = [
             "ffmpeg", "-y",
             "-hide_banner", "-loglevel", "error",
