@@ -1959,11 +1959,13 @@
     const status = $("#stream-status");
     const table = $("#stream-variants");
     const pre = $("#stream-log");
+    console.log("[streams] detect clicked", url);
+    if (status) status.textContent = "Detecting…";
     if (!url) {
       if (status) status.textContent = "Paste a URL first";
+      if (pre) pre.textContent = "No URL entered";
       return;
     }
-    if (status) status.textContent = "Detecting…";
     if (table) table.innerHTML = "";
     if (pre) pre.textContent = "Calling /api/v1/streams/detect…";
     try {
@@ -2047,6 +2049,8 @@
       detectStreams();
     });
   }
+  // Expose for the inline onclick fallback
+  window.directarrDetect = detectStreams;
 
   // Boot
   updateSettings();
