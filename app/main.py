@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from . import gdrive, goindex, torznab
 from . import config
+from . import streams as streams_mod
 from .auth import (
     SESSION_COOKIE,
     auth_mode,
@@ -399,6 +400,51 @@ def list_releases(request: Request, limit: int = 100, x_api_key: str | None = He
 class BulkDownloadRequest(BaseModel):
     url: str = Field(min_length=8, max_length=2000)
     files: list[dict] = Field(default_factory=list, max_length=500)
+
+
+@app.post("/api/v1/streams/detect")
+async def streams_detect(
+    request: Request,
+    body: dict,
+    x_api_key: str | None = Header(default=None),
+):
+    """Detect HLS variants from a page URL or a direct M3U8 URL.
+
+    Body: {"url": "https://...", "headers": {"Referer": "...", "Cookie": "..."}}
+    """
+    key = x_api_key or ""
+    if key:
+        require_key(key)
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    headers = body.get("headers") or {}
+    result = await streams_mod.detect_streams(url, headers=headers)
+    return result
+
+
+@app.post("/api/v1/streams/download", status_code=202)
+async def streams_download(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: dict,
+    x_api_key: str | None = Header(default=None),
+):
+    """Enqueue an HLS stream for FFmpeg download.
+
+    Body: {"title": "...", "url": "https://...m3u8", "headers": {...}}
+    """
+    key = x_api_key or ""
+    if key:
+        require_key(key)
+    title = (body.get("title") or "Stream").strip()
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    headers = body.get("headers") or {}
+    job_id = streams_mod.enqueue_stream(title, url, headers=headers)
+    background_tasks.add_task(streams_mod.run_stream_download, job_id, title, url, headers)
+    return {"ok": True, "id": job_id, "status": "queued", "title": title}
 
 
 @app.post("/api/v1/downloads", status_code=202)
