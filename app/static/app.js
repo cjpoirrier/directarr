@@ -123,6 +123,7 @@
       search: "Search",
       releases: "Releases",
       downloads: "Downloads",
+      streams: "Streams",
       history: "History",
       stats: "Stats",
       sources: "Indexers",
@@ -1945,6 +1946,83 @@
       toast(e.message, true);
     }
   });
+
+  // --- Streams ---
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({
+      "&": "&", "<": "<", ">": ">", '"': """, "'": "&#39;"
+    }[c]));
+  }
+
+  async function detectStreams() {
+    const url = $("#stream-url")?.value?.trim();
+    const status = $("#stream-status");
+    const table = $("#stream-variants");
+    if (!url) return;
+    if (status) status.textContent = "Detecting…";
+    if (table) table.innerHTML = "";
+    try {
+      const res = await api("/api/v1/streams/detect", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      if (res.error && !(res.variants || []).length) {
+        if (status) status.textContent = res.error;
+        return;
+      }
+      const variants = res.variants || [];
+      if (status) status.textContent = variants.length ? `${variants.length} variant(s) found` : "No variants found";
+      if (!table) return;
+      if (!variants.length) {
+        table.innerHTML = "<p class='hint'>No playable variants detected. Try pasting a direct .m3u8 URL.</p>";
+        return;
+      }
+      table.innerHTML = `
+        <table class="data">
+          <thead><tr><th>Quality</th><th>Bandwidth</th><th>Codecs</th><th></th></tr></thead>
+          <tbody>
+            ${variants.map((v, i) => `
+              <tr>
+                <td>${escapeHtml(v.resolution || "unknown")}</td>
+                <td>${v.bandwidth ? Math.round(v.bandwidth / 1000) + " kbps" : "—"}</td>
+                <td>${escapeHtml(v.codecs || "—")}</td>
+                <td><button class="btn sm primary" data-stream-url="${escapeHtml(v.url)}" data-stream-title="${escapeHtml(v.resolution || "stream")}">Download</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`;
+      table.querySelectorAll("button[data-stream-url]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const sUrl = btn.getAttribute("data-stream-url");
+          const sTitle = btn.getAttribute("data-stream-title") || "Stream";
+          btn.disabled = true;
+          btn.textContent = "Queuing…";
+          try {
+            await api("/api/v1/streams/download", {
+              method: "POST",
+              body: JSON.stringify({ title: sTitle, url: sUrl }),
+            });
+            btn.textContent = "Queued";
+            if (status) status.textContent = "Queued. Check Downloads.";
+          } catch (e) {
+            btn.disabled = false;
+            btn.textContent = "Download";
+            if (status) status.textContent = e.message || "Queue failed";
+          }
+        });
+      });
+    } catch (e) {
+      if (status) status.textContent = e.message || "Detection failed";
+    }
+  }
+
+  const streamForm = $("#stream-detect-form");
+  if (streamForm) {
+    streamForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      detectStreams();
+    });
+  }
 
   // Boot
   updateSettings();
