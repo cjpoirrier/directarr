@@ -426,31 +426,31 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                                 out_f.write(p.read_bytes())
                         # Download subtitle tracks (best-effort)
                         sub_files = []
-                        for lang, name, uri in sub_tracks[:6]:
+                        for lang, name, uri in sub_tracks[:3]:
                             try:
                                 suri = uri if uri.startswith("http") else urljoin(stream_url, uri)
-                                # Try original, then .html, then /r/ path
+                                _log(f"subtitle {lang} raw uri={uri[:120]}")
                                 candidates = [suri]
+                                # common WebVTT locations
+                                if not suri.endswith(".vtt"):
+                                    candidates.append(suri + ".vtt")
                                 if not suri.endswith(".html"):
                                     candidates.append(suri + ".html")
-                                if "/r/" not in suri and "neocdn" in suri:
-                                    # insert /r/ before the hash
-                                    parts = suri.split("/")
-                                    if len(parts) > 3:
-                                        candidates.append("/".join(parts[:3]) + "/r/" + "/".join(parts[3:]))
-                                saved = False
+                                if "neocdn" in suri:
+                                    candidates.append(suri.replace(".com/", ".com/r/") + ".vtt")
+                                    candidates.append(suri.replace(".top/", ".top/r/") + ".vtt")
                                 for cand in candidates:
                                     sr = client.get(cand, headers=probe_headers)
-                                    if sr.status_code == 200 and len(sr.content) > 100 and b"<html" not in sr.content[:200].lower():
-                                        ext = ".vtt" if b"WEBVTT" in sr.content[:30] or b"-->" in sr.content[:800] else ".srt"
-                                        sp = STAGING_DIR / f"{job_id}_{lang}{ext}"
+                                    is_vtt = b"WEBVTT" in sr.content[:30] or b"-->" in sr.content[:500]
+                                    _log(f"  {sr.status_code} vtt={is_vtt} {cand[:80]}")
+                                    if sr.status_code == 200 and is_vtt:
+                                        sp = STAGING_DIR / f"{job_id}_{lang}.vtt"
                                         sp.write_bytes(sr.content)
                                         sub_files.append((lang, name, sp))
-                                        _log(f"subtitle {lang} saved {ext} from {cand[:60]}")
-                                        saved = True
+                                        _log(f"subtitle {lang} saved vtt")
                                         break
-                                if not saved:
-                                    _log(f"subtitle {lang} no usable file")
+                                else:
+                                    _log(f"subtitle {lang} no vtt found")
                             except Exception as exc:
                                 _log(f"subtitle {lang} failed: {exc}")
                         out = STAGING_DIR / f"{job_id}.part.mkv"
