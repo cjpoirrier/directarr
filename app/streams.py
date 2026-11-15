@@ -396,14 +396,13 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
-            page = await context.new_page()
-            # Inject capture hooks before any page script runs
-            await page.add_init_script("""
-                window.__directarr_found = [];
+            # Inject into every page/frame created in this context
+            await context.add_init_script("""
+                window.__directarr_found = window.__directarr_found || [];
                 function _check(u) {
                     if (!u) return;
                     const s = String(u);
-                    if (s.includes('.m3u8') || s.includes('/cdn/hls/') || s.includes('master.txt') || s.includes('do=getVideo')) {
+                    if (s.includes('.m3u8') || s.includes('/cdn/hls/') || s.includes('master.txt') || s.includes('do=getVideo') || s.includes('.mp4')) {
                         if (!window.__directarr_found.includes(s)) window.__directarr_found.push(s);
                     }
                 }
@@ -418,6 +417,7 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                     return _open.apply(this, arguments);
                 };
             """)
+            page = await context.new_page()
             page.on("request", on_request)
             # Also watch frames as they appear
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
@@ -459,8 +459,26 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 page2.on("request", on_request)
                 try:
                     await page2.goto(kisscloud, wait_until="domcontentloaded", timeout=15000)
-                    await page2.wait_for_timeout(8000)
-                    # try clicking play inside the embed
+                    await page2.wait_for_timeout(5000)
+                    # Try the getVideo API directly if we can extract the id
+                    vid = kisscloud.rstrip("/").split("/")[-1]
+                    if vid and len(vid) > 8:
+                        api = f"https://kisscloud.online/player/index.php?data={vid}&do=getVideo"
+                        step(f"trying getVideo: {api}")
+                        try:
+                            resp = await page2.evaluate(f"""async () => {{
+                                const r = await fetch("{api}", {{credentials: "include"}});
+                                return await r.text();
+                            }}""")
+                            step(f"getVideo response length: {len(resp or '')}")
+                            if resp:
+                                import re as _re
+                                for m in _re.findall(r'https?://[^"\'\s]+(?:m3u8|master\.txt|/cdn/hls/)[^"\'\s]*', resp):
+                                    if m not in found:
+                                        found.append(m)
+                                        step(f"getVideo found {m}")
+                        except Exception as exc:
+                            step(f"getVideo fetch failed: {exc}")
                     for sel in ["video", ".jw-icon-play", "[class*='play']", "button"]:
                         try:
                             el = await page2.query_selector(sel)
@@ -471,6 +489,15 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                         except Exception:
                             pass
                     await page2.wait_for_timeout(6000)
+                    # Collect from this page too
+                    try:
+                        injected2 = await page2.evaluate("() => window.__directarr_found || []")
+                        for u in injected2:
+                            if u not in found:
+                                found.append(u)
+                                step(f"embed injected {u}")
+                    except Exception:
+                        pass
                 except Exception as exc:
                     step(f"embed open failed: {exc}")
                 await page2.close()
