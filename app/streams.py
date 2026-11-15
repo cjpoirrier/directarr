@@ -416,6 +416,15 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                                 (str(final), job_id),
                             )
                         _log(f"manual download complete: {final} ({final.stat().st_size} bytes)")
+                        # Probe the result
+                        try:
+                            pr = subprocess.run(
+                                ["ffprobe", "-hide_banner", "-show_format", "-show_streams", str(final)],
+                                capture_output=True, text=True, timeout=30,
+                            )
+                            _log(f"ffprobe: {pr.stdout[:500] or pr.stderr[:300]}")
+                        except Exception as exc:
+                            _log(f"ffprobe failed: {exc}")
                         # cleanup
                         try:
                             raw_ts.unlink()
