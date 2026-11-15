@@ -379,12 +379,26 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                         master,
                     )
                     _log(f"subtitles found: {len(sub_tracks)}")
-                    # get first variant
-                    m = _re.search(r'#EXT-X-STREAM-INF:[^\n]+\n([^\n]+)', master)
+                    # get highest-bandwidth variant
+                    stream_infs = _re.findall(
+                        r'#EXT-X-STREAM-INF:([^\n]+)\n([^\n]+)', master
+                    )
+                    best = None
+                    best_bw = -1
+                    for info, url in stream_infs:
+                        bw = 0
+                        m_bw = _re.search(r'BANDWIDTH=(\d+)', info)
+                        if m_bw:
+                            bw = int(m_bw.group(1))
+                        if bw > best_bw:
+                            best_bw = bw
+                            best = url.strip()
+                    m = best
                     if m:
-                        variant_url = m.group(1).strip()
+                        variant_url = m
                         if not variant_url.startswith("http"):
                             variant_url = urljoin(stream_url, variant_url)
+                        _log(f"using variant bw={best_bw} {variant_url[:80]}")
                         variant = client.get(variant_url, headers=probe_headers).text
                         segs = _re.findall(r'(https?://[^\s]+)', variant)
                         _log(f"manual: {len(segs)} segments (full)")
@@ -415,15 +429,28 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                         for lang, name, uri in sub_tracks[:6]:
                             try:
                                 suri = uri if uri.startswith("http") else urljoin(stream_url, uri)
-                                sr = client.get(suri, headers=probe_headers)
-                                _log(f"subtitle {lang} status={sr.status_code} len={len(sr.content)} type={sr.headers.get('content-type','')}")
-                                if sr.status_code == 200 and len(sr.content) > 50:
-                                    # Save raw; ffmpeg can often read vtt/srt even if extension is wrong
-                                    ext = ".vtt" if b"WEBVTT" in sr.content[:20] or b"-->" in sr.content[:500] else ".srt"
-                                    sp = STAGING_DIR / f"{job_id}_{lang}{ext}"
-                                    sp.write_bytes(sr.content)
-                                    sub_files.append((lang, name, sp))
-                                    _log(f"subtitle {lang} saved {ext}")
+                                # Try original, then .html, then /r/ path
+                                candidates = [suri]
+                                if not suri.endswith(".html"):
+                                    candidates.append(suri + ".html")
+                                if "/r/" not in suri and "neocdn" in suri:
+                                    # insert /r/ before the hash
+                                    parts = suri.split("/")
+                                    if len(parts) > 3:
+                                        candidates.append("/".join(parts[:3]) + "/r/" + "/".join(parts[3:]))
+                                saved = False
+                                for cand in candidates:
+                                    sr = client.get(cand, headers=probe_headers)
+                                    if sr.status_code == 200 and len(sr.content) > 100 and b"<html" not in sr.content[:200].lower():
+                                        ext = ".vtt" if b"WEBVTT" in sr.content[:30] or b"-->" in sr.content[:800] else ".srt"
+                                        sp = STAGING_DIR / f"{job_id}_{lang}{ext}"
+                                        sp.write_bytes(sr.content)
+                                        sub_files.append((lang, name, sp))
+                                        _log(f"subtitle {lang} saved {ext} from {cand[:60]}")
+                                        saved = True
+                                        break
+                                if not saved:
+                                    _log(f"subtitle {lang} no usable file")
                             except Exception as exc:
                                 _log(f"subtitle {lang} failed: {exc}")
                         out = STAGING_DIR / f"{job_id}.part.mkv"
