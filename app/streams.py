@@ -318,11 +318,14 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 video_urls = [u.strip().strip('"') for _, u in stream_infs if "http" in u]
                 # Also grab any non-subtitle media URIs
                 media_uris = _re.findall(r'URI="([^"]+)"', body)
+                # Show head and tail so video entries aren't missed
+                head = body[:500].replace("\n", " | ")
+                tail = body[-800:].replace("\n", " | ") if len(body) > 800 else ""
                 probe_note = (
                     f"playlist {pr.status_code} len={len(body)} "
                     f"video={video_urls[:3]} "
-                    f"uris={media_uris[:2]} "
-                    f"raw={body[:600].replace(chr(10), ' | ')}"
+                    f"head={head} "
+                    f"tail={tail}"
                 )
                 _log(probe_note)
                 # Test-fetch the first video variant if we have one
