@@ -1624,6 +1624,75 @@
     });
   }
 
+  // Proxy settings
+  async function loadProxy() {
+    try {
+      const data = await api("/api/v1/settings/proxy");
+      const input = $("#proxy-url");
+      if (input) input.value = data.proxy || "";
+    } catch (e) {}
+  }
+  const saveProxyBtn = $("#save-proxy");
+  if (saveProxyBtn) {
+    saveProxyBtn.addEventListener("click", async () => {
+      const val = ($("#proxy-url") && $("#proxy-url").value) || "";
+      const status = $("#proxy-status");
+      try {
+        await api("/api/v1/settings/proxy", { method: "POST", body: { proxy: val } });
+        if (status) status.textContent = val ? "Saved" : "Cleared";
+      } catch (e) {
+        if (status) status.textContent = e.message || "Failed";
+      }
+    });
+  }
+  // Proxy list (tag-based)
+  async function loadProxyList() {
+    const el = $("#proxy-list");
+    if (!el) return;
+    try {
+      const data = await api("/api/v1/proxies");
+      const items = data.items || [];
+      el.innerHTML = items.length
+        ? items.map(p =>
+            '<div class="row between" style="margin:0.35rem 0; padding:0.35rem 0; border-bottom:1px solid var(--border,#333)">' +
+            '<span><strong>' + escapeHtml(p.name) + '</strong> <code>' + escapeHtml(p.url) + '</code> ' +
+            '<span class="hint">' + escapeHtml(p.tags || "") + '</span></span>' +
+            '<button class="btn sm danger" data-proxy-id="' + p.id + '">Delete</button></div>'
+          ).join("")
+        : '<p class="hint">No proxies yet.</p>';
+      el.querySelectorAll("button[data-proxy-id]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          await api("/api/v1/proxies/" + btn.getAttribute("data-proxy-id"), { method: "DELETE" });
+          loadProxyList();
+        });
+      });
+    } catch (e) {
+      el.innerHTML = '<p class="hint">Failed to load proxies</p>';
+    }
+  }
+  const proxyAddBtn = $("#proxy-add");
+  if (proxyAddBtn) {
+    proxyAddBtn.addEventListener("click", async () => {
+      const name = ($("#proxy-name") && $("#proxy-name").value.trim()) || "";
+      const url = ($("#proxy-url-new") && $("#proxy-url-new").value.trim()) || "";
+      const tags = ($("#proxy-tags") && $("#proxy-tags").value.trim()) || "";
+      if (!name || !url) return;
+      await api("/api/v1/proxies", { method: "POST", body: { name, url, tags } });
+      if ($("#proxy-name")) $("#proxy-name").value = "";
+      if ($("#proxy-url-new")) $("#proxy-url-new").value = "";
+      if ($("#proxy-tags")) $("#proxy-tags").value = "";
+      loadProxyList();
+    });
+  }
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.getAttribute("data-view") === "settings") {
+        loadProxy();
+        loadProxyList();
+      }
+    });
+  });
+
   const FILTER_QUERY_TERMS = {
     "1080p": "1080p",
     "720p": "720p",

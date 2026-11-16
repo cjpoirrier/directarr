@@ -798,6 +798,82 @@ def settings_regenerate_api_key(request: Request, x_api_key: str | None = Header
     }
 
 
+# ── Proxy ───────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/v1/settings/proxy")
+def settings_proxy_get(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    path = config.CONFIG_DIR / "proxy.txt"
+    val = path.read_text().strip() if path.is_file() else ""
+    return {"proxy": val}
+
+
+@app.post("/api/v1/settings/proxy")
+async def settings_proxy_set(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    body = await request.json()
+    val = (body.get("proxy") or "").strip()
+    path = config.CONFIG_DIR / "proxy.txt"
+    path.write_text(val)
+    add_history("settings", "Proxy updated" if val else "Proxy cleared")
+    return {"ok": True, "proxy": val}
+
+
+# ── Proxies (Prowlarr-style tag routing) ────────────────────────────────────
+
+
+class ProxyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    url: str = Field(min_length=1)
+    tags: str = ""
+    enabled: bool = True
+
+
+@app.get("/api/v1/proxies")
+def proxies_list(request: Request, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    with connect() as db:
+        rows = db.execute("SELECT * FROM proxies ORDER BY name").fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/api/v1/proxies", status_code=201)
+def proxies_create(request: Request, body: ProxyCreate, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    import uuid as _uuid
+    pid = str(_uuid.uuid4())
+    with connect() as db:
+        db.execute(
+            "INSERT INTO proxies (id, name, url, tags, enabled) VALUES (?, ?, ?, ?, ?)",
+            (pid, body.name.strip(), body.url.strip(), body.tags.strip(), 1 if body.enabled else 0),
+        )
+    add_history("proxy", f"Added proxy {body.name}")
+    return {"id": pid, "name": body.name, "url": body.url, "tags": body.tags}
+
+
+@app.delete("/api/v1/proxies/{proxy_id}")
+def proxies_delete(request: Request, proxy_id: str, x_api_key: str | None = Header(default=None)):
+    require_auth(request, x_api_key)
+    with connect() as db:
+        db.execute("DELETE FROM proxies WHERE id=?", (proxy_id,))
+    return {"ok": True}
+
+
+def resolve_proxy_for_tags(tags: str) -> str | None:
+    """Return proxy URL if any enabled proxy shares a tag with the source."""
+    wanted = {t.strip().lower() for t in (tags or "").split(",") if t.strip()}
+    if not wanted:
+        return None
+    with connect() as db:
+        rows = db.execute("SELECT url, tags FROM proxies WHERE enabled=1").fetchall()
+    for row in rows:
+        have = {t.strip().lower() for t in (row["tags"] or "").split(",") if t.strip()}
+        if wanted & have:
+            return row["url"]
+    return None
+
+
 # ── Applications (Sonarr / Radarr / …) ──────────────────────────────────────
 
 

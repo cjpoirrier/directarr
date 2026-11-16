@@ -23,8 +23,16 @@ from .db import connect
 log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
 
-def get_proxy() -> str | None:
-    """Return proxy URL from env or saved settings, or None."""
+def get_proxy(tags: str | None = None) -> str | None:
+    """Return proxy URL. Tag match wins, then saved/env proxy."""
+    if tags:
+        try:
+            from .main import resolve_proxy_for_tags
+            match = resolve_proxy_for_tags(tags)
+            if match:
+                return match
+        except Exception:
+            pass
     env = os.environ.get("DIRECTARR_PROXY")
     if env:
         return env

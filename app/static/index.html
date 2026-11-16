@@ -248,6 +248,29 @@
                   </div>
                 </div>
                 <div class="panel">
+                  <h2>Proxies</h2>
+                  <p class="hint">Tag a proxy and a source with the same tag to route that source through the proxy (like Prowlarr).</p>
+                  <div id="proxy-list"></div>
+                  <div class="row" style="margin-top:0.75rem; gap:0.5rem; flex-wrap:wrap">
+                    <input id="proxy-name" type="text" placeholder="Name" style="max-width:120px" />
+                    <input id="proxy-url-new" type="text" placeholder="http://host:port" style="flex:1; min-width:180px" />
+                    <input id="proxy-tags" type="text" placeholder="tags (vpn, fl)" style="max-width:140px" />
+                    <button class="btn sm primary" id="proxy-add" type="button">Add</button>
+                  </div>
+                </div>
+                <div class="panel">
+                  <h2>Network</h2>
+                  <div class="settings-grid">
+                    <div class="settings-label">Proxy</div>
+                    <div class="settings-field">
+                      <input id="proxy-url" type="text" placeholder="http://user:pass@host:port" autocomplete="off" />
+                      <p class="hint">Optional. Used for stream detection and segment downloads.</p>
+                      <button class="btn sm" id="save-proxy" type="button">Save proxy</button>
+                      <span id="proxy-status" class="hint"></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
                   <h2>Security</h2>
                   <div class="settings-grid">
                     <div class="settings-label">Authentication</div>
