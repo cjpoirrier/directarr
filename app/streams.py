@@ -671,9 +671,17 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 from pathlib import Path as _Path
                 cache_root = _Path("/config/camoufox")
                 cache_root.mkdir(parents=True, exist_ok=True)
-                (cache_root / ".cache" / "camoufox").mkdir(parents=True, exist_ok=True)
-                _os.environ["CAMOUFOX_CACHE"] = str(cache_root / ".cache" / "camoufox")
-                step(f"launching Camoufox (cache={cache_root})")
+                # Camoufox hardcodes ~/.cache/camoufox — symlink it to the writable volume
+                real_cache = _Path("/root/.cache/camoufox")
+                real_cache.parent.mkdir(parents=True, exist_ok=True)
+                if real_cache.is_symlink() or real_cache.exists():
+                    if real_cache.is_symlink():
+                        real_cache.unlink()
+                    elif real_cache.is_dir() and not any(real_cache.iterdir()):
+                        real_cache.rmdir()
+                if not real_cache.exists():
+                    real_cache.symlink_to(cache_root)
+                step(f"launching Camoufox (linked {real_cache} -> {cache_root})")
                 camoufox_cm = AsyncCamoufox(headless=True)
                 browser = await camoufox_cm.__aenter__()
                 used_camoufox = True
