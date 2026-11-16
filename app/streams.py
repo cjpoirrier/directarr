@@ -7,13 +7,11 @@ user pick a quality, and downloads via FFmpeg into the existing queue.
 from __future__ import annotations
 
 import logging
-import json
 import re
 import subprocess
 import uuid
-import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -21,7 +19,6 @@ import os
 
 from .config import DOWNLOAD_DIR, STAGING_DIR
 from .db import connect
-from .settings_store import effective_flaresolverr_url
 
 log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
@@ -61,54 +58,6 @@ def httpx_sync_client(**kwargs):
     if proxy:
         kwargs.setdefault("proxy", proxy)
     return httpx.Client(**kwargs)
-
-
-async def _fetch_text(
-    url: str,
-    headers: dict | None = None,
-    timeout: int = 20,
-    log_fn: Callable[[str], None] | None = None,
-) -> tuple[str, str, int]:
-    """Fetch text directly or through an optional FlareSolverr-compatible API."""
-    emit = log_fn or _log
-    flaresolverr_url = effective_flaresolverr_url()
-    if flaresolverr_url:
-        emit(f"request via FlareSolverr: {url}")
-        payload: dict[str, Any] = {
-            "cmd": "request.get",
-            "url": url,
-            "maxTimeout": max(1000, timeout * 1000),
-        }
-        if headers:
-            payload["headers"] = headers
-        try:
-            async with httpx.AsyncClient(timeout=timeout + 15) as client:
-                response = await client.post(flaresolverr_url, json=payload)
-                response.raise_for_status()
-                data = response.json()
-        except Exception as exc:
-            emit(f"FlareSolverr request failed: {exc}")
-            raise
-        if data.get("status") != "ok":
-            message = data.get("message") or "URL fetch service returned an error"
-            emit(f"FlareSolverr returned an error: {message}")
-            raise RuntimeError(message)
-        solution = data.get("solution") or {}
-        status_code = int(solution.get("status") or 200)
-        if status_code < 200 or status_code >= 400:
-            raise RuntimeError(f"URL fetch target returned HTTP {status_code}")
-        text = solution.get("response")
-        if not isinstance(text, str):
-            raise RuntimeError("URL fetch service returned no text response")
-        emit(f"FlareSolverr completed: target_status={status_code} bytes={len(text)}")
-        return text, solution.get("url") or url, status_code
-
-    emit(f"request via direct HTTP: {url}")
-    async with httpx_client(follow_redirects=True, timeout=timeout) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        emit(f"direct HTTP completed: status={response.status_code} bytes={len(response.text)}")
-        return response.text, str(response.url), response.status_code
 
 # Simple ring buffer for recent stream-related log lines (shared with main)
 _LOG_BUFFER: list[str] = []
@@ -157,23 +106,19 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
         "log": [],
     }
 
-    def step(msg: str, level: str = "info") -> None:
+    def step(msg: str) -> None:
         result["log"].append(msg)
-        _log(msg, level)
+        _log(msg)
 
     step(f"detect start: {url}")
-    flaresolverr_url = effective_flaresolverr_url()
-    step(
-        f"fetch service: FlareSolverr ({flaresolverr_url})"
-        if flaresolverr_url
-        else "fetch service: direct HTTP"
-    )
 
     try:
-        text, final_url, status_code = await _fetch_text(
-            url, headers=headers, timeout=60, log_fn=step
-        )
-        step(f"fetched {final_url} status={status_code} bytes={len(text)}")
+        async with httpx_client(follow_redirects=True, timeout=20) as client:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            text = r.text
+            final_url = str(r.url)
+        step(f"fetched {final_url} status={r.status_code} bytes={len(text)}")
     except Exception as exc:
         step(f"fetch failed: {exc}")
         result["error"] = str(exc)
@@ -203,17 +148,18 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
             api = doo.group(1).rstrip("/") + f"/{post.group(1)}/{ptype.group(1)}/{nume.group(1)}"
             step(f"dooplay api: {api}")
             try:
-                pr_text, _, _ = await _fetch_text(
-                    api, headers={**headers, "Referer": final_url}, timeout=15, log_fn=step
-                )
-                pdata = json.loads(pr_text)
+                async with httpx_client(follow_redirects=True, timeout=15) as client:
+                    pr = await client.get(api, headers={**headers, "Referer": final_url})
+                    pr.raise_for_status()
+                    pdata = pr.json()
                 embed = (pdata or {}).get("embed_url") or ""
                 step(f"dooplay embed: {embed or 'none'}")
                 if embed:
                     # Follow embed and look for m3u8/mp4
-                    etext, _, _ = await _fetch_text(
-                        embed, headers={**headers, "Referer": final_url}, timeout=15, log_fn=step
-                    )
+                    async with httpx_client(follow_redirects=True, timeout=15) as client:
+                        er = await client.get(embed, headers={**headers, "Referer": final_url})
+                        er.raise_for_status()
+                        etext = er.text
                     found = re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', etext, re.I)
                     step(f"embed scan found {len(found)} media urls")
                     if found:
@@ -249,15 +195,15 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
     for murl in m3u8_urls[:3]:
         try:
             step(f"fetching candidate {murl}")
-            mtext, media_url, _ = await _fetch_text(
-                murl, headers=headers, timeout=15, log_fn=step
-            )
-            parsed = _parse_m3u8(mtext, media_url)
-            step(f"candidate parsed type={parsed['type']} variants={len(parsed['variants'])}")
-            if parsed["variants"]:
-                parsed["type"] = "master" if parsed["type"] == "master" else "media"
-                parsed["log"] = result["log"]
-                return parsed
+            async with httpx_client(follow_redirects=True, timeout=15) as client:
+                mr = await client.get(murl, headers=headers)
+                mr.raise_for_status()
+                parsed = _parse_m3u8(mr.text, str(mr.url))
+                step(f"candidate parsed type={parsed['type']} variants={len(parsed['variants'])}")
+                if parsed["variants"]:
+                    parsed["type"] = "master" if parsed["type"] == "master" else "media"
+                    parsed["log"] = result["log"]
+                    return parsed
         except Exception as exc:
             step(f"candidate failed: {exc}")
             continue
@@ -395,22 +341,8 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             effective_headers["Referer"] = "https://kisscloud.online/"
         if "user-agent" not in {k.lower() for k in effective_headers}:
             effective_headers["User-Agent"] = USER_AGENT
-        user_agent = next(
-            str(v) for k, v in effective_headers.items() if k.lower() == "user-agent"
-        )
-        referer = next(
-            (str(v) for k, v in effective_headers.items() if k.lower() == "referer"),
-            "https://kisscloud.online/",
-        )
         for k, v in effective_headers.items():
-            # Avoid CR/LF injection in FFmpeg's header argument.
-            if (
-                k.lower() != "user-agent"
-                and "\r" not in k
-                and "\n" not in k
-                and "\r" not in str(v)
-                and "\n" not in str(v)
-            ):
+            if k.lower() in ("user-agent", "referer", "cookie", "origin"):
                 hdr_lines.append(f"{k}: {v}")
         header_arg = "\r\n".join(hdr_lines) + "\r\n" if hdr_lines else ""
 
@@ -420,11 +352,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             try:
                 import httpx as _httpx
                 probe_headers = {
-                    k: v
-                    for k, v in effective_headers.items()
-                    if k.lower() not in {"user-agent", "referer"}
+                    "User-Agent": USER_AGENT,
+                    "Referer": effective_headers.get("Referer", "https://kisscloud.online/"),
                 }
-                probe_headers.update({"User-Agent": user_agent, "Referer": referer})
                 with httpx_sync_client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
                     body = pr.text
@@ -474,11 +404,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 import httpx as _httpx
                 from urllib.parse import urljoin
                 probe_headers = {
-                    k: v
-                    for k, v in effective_headers.items()
-                    if k.lower() not in {"user-agent", "referer"}
+                    "User-Agent": USER_AGENT,
+                    "Referer": "https://kisscloud.online/",
                 }
-                probe_headers.update({"User-Agent": user_agent, "Referer": referer})
                 with httpx_sync_client(follow_redirects=True, timeout=30) as client:
                     master = client.get(stream_url, headers=probe_headers).text
                     import re as _re
@@ -616,7 +544,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         cmd = [
             "ffmpeg", "-y",
             "-hide_banner", "-loglevel", "error",
-            "-user_agent", user_agent,
+            "-user_agent", USER_AGENT,
             "-allowed_extensions", "ALL",
             "-extension_picky", "0",
             "-f", "hls",
@@ -692,213 +620,107 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 pass
         raise
 
-async def _flaresolverr_cookies(
-    url: str,
-    timeout: int,
-    log_fn: Callable[[str], None],
-) -> tuple[list[dict[str, Any]], str | None, str | None]:
-    """Use FlareSolverr to solve the page and return cookies/user-agent/final URL."""
-    flaresolverr_url = effective_flaresolverr_url()
-    if not flaresolverr_url:
-        log_fn("FlareSolverr is not configured; continuing without it")
-        return [], None, None
 
-    log_fn("requesting page via FlareSolverr")
-    async with httpx.AsyncClient(timeout=timeout + 15) as client:
-        response = await client.post(
-            flaresolverr_url,
-            json={
-                "cmd": "request.get",
-                "url": url,
-                "maxTimeout": max(1000, timeout * 1000),
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    if data.get("status") != "ok":
-        raise RuntimeError(data.get("message") or "FlareSolverr request failed")
-
-    solution = data.get("solution") or {}
-    cookies = []
-
-    for cookie in solution.get("cookies") or []:
-        item = {
-            "name": cookie.get("name"),
-            "value": cookie.get("value"),
-            "url": cookie.get("url") or url,
-        }
-        # Playwright requires a valid name/value and either url or domain/path.
-        if item["name"] and item["value"] is not None:
-            cookies.append(item)
-
-    response_headers = solution.get("headers") or {}
-    user_agent = next(
-        (
-            str(value)
-            for key, value in response_headers.items()
-            if key.lower() == "user-agent"
-        ),
-        None,
-    )
-    final_url = solution.get("url") or url
-
-    log_fn(f"FlareSolverr completed; received {len(cookies)} cookies")
-    return cookies, user_agent, final_url
-      
 async def capture_with_browser(url: str, timeout: int = 15) -> dict:
-    """Load a page in a headless browser and capture m3u8/mp4 requests."""
+    """Load a page in a headless browser and capture m3u8/mp4 requests.
+
+    Requires playwright and a Chromium install.
+    """
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": []}
 
-    def step(msg: str, level: str = "info") -> None:
+    def step(msg: str) -> None:
         result["log"].append(msg)
-        _log(msg, level)
+        _log(msg)
 
     step(f"browser capture start: {url}")
     proxy = get_proxy()
     step(f"proxy: {proxy.split('@')[-1] if proxy else 'none'}")
-
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        result["error"] = (
-            "playwright not installed. Add it to the image and run "
-            "playwright install chromium."
-        )
+        result["error"] = "playwright not installed. Add it to the image and run playwright install chromium."
         step(result["error"])
         return result
 
-    try:
-        fs_cookies, fs_user_agent, fs_final_url = await _flaresolverr_cookies(
-            url, timeout, step
-        )
-    except Exception as exc:
-        result["error"] = f"FlareSolverr failed: {exc}"
-        step(result["error"], "error")
-        return result
+    found = []
+    seen_urls = []
 
-    found: list[str] = []
-    captured_headers: dict[str, dict[str, str]] = {}
-    seen_urls: list[str] = []
+    async def on_request(req):
+        u = req.url
+        if len(seen_urls) < 30 and not any(x in u for x in [".js", ".css", ".png", ".jpg", ".woff", "google", "analytics"]):
+            seen_urls.append(u.split("?")[0][:120])
+        if ".m3u8" in u.lower() or ".mp4" in u.lower():
+            if u not in found:
+                found.append(u)
+                step(f"captured media {u}")
+        elif "neocdn" in u.lower() and u.endswith(".html"):
+            pass  # subtitle tracks, skip
+        elif "/video/" in u.lower() and "kisscloud" in u.lower():
+            if u not in found:
+                found.append(u)
+                step(f"captured embed {u}")
 
-    async def on_request(req) -> None:
-        request_url = req.url
-        lower = request_url.lower()
-
-        if len(seen_urls) < 30 and not any(
-            marker in lower
-            for marker in (
-                ".js", ".css", ".png", ".jpg", ".woff", "google", "analytics"
-            )
-        ):
-            seen_urls.append(request_url.split("?")[0][:120])
-
-        is_media = ".m3u8" in lower or ".mp4" in lower
-        is_embed = "/video/" in lower and "kisscloud" in lower
-
-        if is_media or is_embed:
-            if request_url not in found:
-                found.append(request_url)
-            try:
-                captured_headers[request_url] = await req.all_headers()
-            except Exception as exc:
-                captured_headers.setdefault(request_url, {})
-                step(f"could not capture request headers: {exc}")
-            step(f"captured {'media' if is_media else 'embed'} {request_url}")
-
-    async def on_document_response(response) -> None:
-        if response.request.is_navigation_request():
-            step(
-                f"document response: status={response.status} "
-                f"url={response.url[:200]}",
-                "warning" if response.status >= 400 else "info",
-            )
-
-    async def on_document_request_failed(request) -> None:
-        if request.is_navigation_request():
-            step(
-                f"document request failed: {request.failure or 'unknown failure'} "
-                f"url={request.url[:200]}",
-                "warning",
-            )
-
-    def on_page_error(error) -> None:
-        step(f"page JavaScript error: {str(error)[:400]}", "error")
-
-    browser = None
     try:
         async with async_playwright() as p:
-            launch_options: dict[str, Any] = {
-                "headless": True,
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
-            }
-            if proxy:
-                launch_options["proxy"] = {"server": proxy}
-
-            browser = await p.chromium.launch(**launch_options)
+            browser = None
+            used_camoufox = False
+            # Prefer Camoufox when available (better fingerprint resistance)
+            try:
+                from camoufox.async_api import AsyncCamoufox
+                step("launching Camoufox")
+                camoufox_cm = AsyncCamoufox(headless=True)
+                browser = await camoufox_cm.__aenter__()
+                used_camoufox = True
+                step("Camoufox launched")
+            except Exception as exc:
+                step(f"Camoufox unavailable ({exc}); using Chromium")
+            if browser is None:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                    ],
+                    proxy={"server": get_proxy()} if get_proxy() else None,
+                )
             context = await browser.new_context(
-                user_agent=(
-                    fs_user_agent
-                    or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 720},
                 locale="en-US",
             )
-
-            if fs_cookies:
-                await context.add_cookies(fs_cookies)
-                step(f"installed {len(fs_cookies)} FlareSolverr cookies")
-
-            page = await context.new_page()
-
+            # Apply stealth if available (Chromium only; Camoufox has its own)
+            stealth_ok = used_camoufox
+            if used_camoufox:
+                step("Camoufox in use; skipping playwright-stealth")
+                page = await context.new_page()
+            else:
+                stealth_ok = False
             try:
                 from playwright_stealth import stealth_async
+                page = await context.new_page()
                 await stealth_async(page)
-                step("stealth applied")
+                stealth_ok = True
+                step("stealth applied (1.x)")
             except ImportError:
-                step("playwright-stealth unavailable")
-            except Exception as exc:
-                step(f"stealth not applied: {exc}")
-
+                pass
+            if not stealth_ok:
+                try:
+                    from playwright_stealth import Stealth
+                    page = await context.new_page()
+                    await Stealth().apply_stealth_async(page)
+                    stealth_ok = True
+                    step("stealth applied (2.x)")
+                except Exception as exc:
+                    page = await context.new_page()
+                    step(f"stealth not applied: {exc}")
+            if not stealth_ok and "page" not in dir():
+                page = await context.new_page()
+                step("stealth unavailable")
+            # Also watch frames as they appear
             page.on("request", on_request)
-            page.on("response", on_document_response)
-            page.on("requestfailed", on_document_request_failed)
-            page.on("pageerror", on_page_error)
-
-            navigation_url = fs_final_url or url
-            navigation_started = time.monotonic()
-            step(f"navigation started: {navigation_url}")
-
-            try:
-                response = await page.goto(
-                    navigation_url,
-                    wait_until="domcontentloaded",
-                    timeout=timeout * 1000,
-                )
-            except Exception as exc:
-                elapsed = time.monotonic() - navigation_started
-                step(
-                    f"navigation failed after {elapsed:.2f}s: "
-                    f"{type(exc).__name__}: {exc}",
-                    "error",
-                )
-                raise
-
-            elapsed = time.monotonic() - navigation_started
-            if response is None:
-                step(f"navigation finished without response after {elapsed:.2f}s")
-            else:
-                step(
-                    f"main document status={response.status} "
-                    f"url={response.url[:200]} elapsed={elapsed:.2f}s",
-                    "warning" if response.status >= 400 else "info",
-                )
-
+            page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            step("page loaded, looking for play controls")
             try:
                 page_title = await page.title()
                 if page_title:
@@ -906,184 +728,154 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                     step(f"page title: {page_title[:80]}")
             except Exception:
                 pass
-
-            for selector in (
+            for sel in [
                 "#player-option-1",
                 ".dooplay_player_option",
                 ".play-btn",
                 "button.play",
                 "[class*='play']",
                 "video",
-            ):
+            ]:
                 try:
-                    element = await page.query_selector(selector)
-                    if element:
-                        await element.click(timeout=2000)
-                        step(f"clicked {selector}")
+                    el = await page.query_selector(sel)
+                    if el:
+                        await el.click(timeout=2000)
+                        step(f"clicked {sel}")
                         break
                 except Exception:
                     pass
-
             await page.wait_for_timeout(6000)
-
-            kisscloud_url = None
-            for frame in page.frames:
+            # Check for iframes and try to interact
+            frames = page.frames
+            step(f"frames: {len(frames)}")
+            kisscloud = None
+            for frame in frames:
                 try:
-                    if frame.url and frame.url != navigation_url and "about:" not in frame.url:
+                    if frame.url and frame.url != url and "about:" not in frame.url:
                         step(f"frame: {frame.url[:100]}")
-                        if any(
-                            marker in frame.url
-                            for marker in ("kisscloud", "/video/", "vhscdn", "embed")
-                        ):
-                            kisscloud_url = frame.url
+                        if any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed")):
+                            kisscloud = frame.url
                 except Exception:
                     pass
-
-            if kisscloud_url:
-                step(f"opening embed directly: {kisscloud_url[:80]}")
+            # If we found an embed iframe, open it directly and watch longer
+            if kisscloud:
+                step(f"opening embed directly: {kisscloud[:80]}")
                 page2 = await context.new_page()
                 page2.on("request", on_request)
-
                 try:
-                    await page2.goto(
-                        kisscloud_url,
-                        wait_until="domcontentloaded",
-                        timeout=15000,
-                    )
+                    await page2.goto(kisscloud, wait_until="domcontentloaded", timeout=15000)
                     await page2.wait_for_timeout(5000)
-
-                    video_id = kisscloud_url.rstrip("/").split("/")[-1]
-                    if video_id and len(video_id) > 8:
-                        api = (
-                            "https://kisscloud.online/player/index.php"
-                            f"?data={video_id}&do=getVideo"
-                        )
+                    # Try the getVideo API directly if we can extract the id
+                    vid = kisscloud.rstrip("/").split("/")[-1]
+                    if vid and len(vid) > 8:
+                        api = f"https://kisscloud.online/player/index.php?data={vid}&do=getVideo"
                         step(f"trying getVideo POST: {api}")
-
                         try:
-                            response_text = await page2.evaluate(
-                                """async (videoId) => {
-                                    const api =
-                                      "https://kisscloud.online/player/index.php?data="
-                                      + encodeURIComponent(videoId) + "&do=getVideo";
-                                    const r = await fetch(api, {
-                                      method: "POST",
-                                      credentials: "include",
-                                      headers: {
-                                        "Content-Type":
-                                          "application/x-www-form-urlencoded",
+                            resp = await page2.evaluate(f"""async () => {{
+                                const r = await fetch("{api}", {{
+                                    method: "POST",
+                                    credentials: "include",
+                                    headers: {{
+                                        "Content-Type": "application/x-www-form-urlencoded",
                                         "X-Requested-With": "XMLHttpRequest"
-                                      },
-                                      body: "hash=" + encodeURIComponent(videoId)
-                                        + "&r=" + encodeURIComponent(location.href)
-                                    });
-                                    return await r.text();
-                                }""",
-                                video_id,
-                            )
-
-                            if response_text:
+                                    }},
+                                    body: "hash={vid}&r=" + encodeURIComponent(location.href)
+                                }});
+                                return await r.text();
+                            }}""")
+                            step(f"getVideo response length: {len(resp or '')}")
+                            if resp:
+                                step("getVideo snippet: " + resp[:300].replace("\n", " "))
+                                import re as _re
+                                # Try to parse as JSON
                                 try:
-                                    data = json.loads(response_text)
+                                    import json as _json
+                                    data = _json.loads(resp)
+                                    step(f"getVideo JSON keys: {list(data.keys())[:10]}")
+                                    # Prefer the signed m3u8
                                     for key in ("securedLink", "videoSource"):
-                                        media_url = data.get(key)
-                                        if (
-                                            isinstance(media_url, str)
-                                            and media_url.startswith("http")
-                                            and media_url not in found
-                                        ):
-                                            found.append(media_url)
-                                            captured_headers.setdefault(media_url, {})
-                                            step(f"stream {key}: {media_url[:120]}")
-                                except Exception:
-                                    pass
-
-                                for media_url in re.findall(
-                                    r"""https?://[^"'\s<>]+""", response_text
-                                ):
-                                    if any(
-                                        marker in media_url.lower()
-                                        for marker in ("m3u8", "hls", ".mp4", "master")
-                                    ) and media_url not in found:
-                                        found.append(media_url)
-                                        captured_headers.setdefault(media_url, {})
-                                        step(f"getVideo URL: {media_url}")
+                                        val = data.get(key)
+                                        if val and isinstance(val, str) and val.startswith("http"):
+                                            if val not in found:
+                                                found.append(val)
+                                                step(f"stream {key}: {val[:120]}")
+                                    if data.get("ck"):
+                                        step("has ck key")
+                                except Exception as exc:
+                                    step(f"json parse failed: {exc}")
+                                for m in _re.findall(r'https?://[^"\'\s<>]+', resp):
+                                    if any(x in m.lower() for x in ["m3u8", "hls", ".mp4", "master"]):
+                                        if m not in found:
+                                            found.append(m)
+                                            step(f"getVideo url {m}")
                         except Exception as exc:
-                            step(f"getVideo request failed: {exc}")
-
-                    for selector in (
-                        "video",
-                        ".jw-icon-play",
-                        "[class*='play']",
-                        "button",
-                    ):
+                            step(f"getVideo fetch failed: {exc}")
+                        except Exception as exc:
+                            step(f"getVideo fetch failed: {exc}")
+                    for sel in ["video", ".jw-icon-play", "[class*='play']", "button"]:
                         try:
-                            element = await page2.query_selector(selector)
-                            if element:
-                                await element.click(timeout=1500)
-                                step(f"embed clicked {selector}")
+                            el = await page2.query_selector(sel)
+                            if el:
+                                await el.click(timeout=1500)
+                                step(f"embed clicked {sel}")
                                 break
                         except Exception:
                             pass
-
                     await page2.wait_for_timeout(6000)
+                    # Collect from this page too
+                    try:
+                        injected2 = await page2.evaluate("() => window.__directarr_found || []")
+                        for u in injected2:
+                            if u not in found:
+                                found.append(u)
+                                step(f"embed injected {u}")
+                    except Exception:
+                        pass
                 except Exception as exc:
                     step(f"embed open failed: {exc}")
-                finally:
-                    await page2.close()
-
+                await page2.close()
             await page.wait_for_timeout(2000)
-
             if seen_urls:
                 step("sample requests: " + " | ".join(seen_urls[:8]))
-
+            # Pull URLs collected by the injected script
             try:
-                injected_urls = await page.evaluate(
-                    "() => window.__directarr_found || []"
-                )
-                for media_url in injected_urls:
-                    if media_url not in found:
-                        found.append(media_url)
-                        captured_headers.setdefault(media_url, {})
-                        step(f"injected URL: {media_url}")
+                injected = await page.evaluate("() => window.__directarr_found || []")
+                for u in injected:
+                    if u not in found:
+                        found.append(u)
+                        step(f"injected found {u}")
             except Exception:
                 pass
-
+            await browser.close()
+            if used_camoufox:
+                try:
+                    await camoufox_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
     except Exception as exc:
         result["error"] = str(exc)
-        step(f"browser error: {exc}", "error")
+        step(f"browser error: {exc}")
         return result
-    finally:
-        if browser is not None:
-            try:
-                await browser.close()
-            except Exception:
-                pass
 
-    cleaned = [
-        media_url
-        for media_url in found
-        if ".m3u8" in media_url.lower() or ".mp4" in media_url.lower()
-        or "/cdn/hls/" in media_url.lower()
-    ]
+    # Prefer signed m3u8; drop embed pages and API endpoints from the list
+    cleaned = []
+    for u in found:
+        lu = u.lower()
+        if ".m3u8" in lu or "/cdn/hls/" in lu:
+            if u not in cleaned:
+                cleaned.append(u)
     if cleaned:
         found = cleaned
-
-    for media_url in found[:10]:
+    for u in found[:10]:
         result["variants"].append({
-            "url": media_url,
+            "url": u,
             "resolution": "captured",
             "bandwidth": 0,
             "codecs": "",
             "name": "browser",
             "average_bandwidth": 0,
-            "headers": captured_headers.get(media_url, {}),
         })
-
     if not found:
-        result["error"] = (
-            "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
-        )
+        result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
         step(result["error"])
-
     return result
