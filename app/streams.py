@@ -429,28 +429,28 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                         for lang, name, uri in sub_tracks[:3]:
                             try:
                                 suri = uri if uri.startswith("http") else urljoin(stream_url, uri)
-                                _log(f"subtitle {lang} raw uri={uri[:120]}")
-                                candidates = [suri]
-                                # common WebVTT locations
-                                if not suri.endswith(".vtt"):
-                                    candidates.append(suri + ".vtt")
-                                if not suri.endswith(".html"):
-                                    candidates.append(suri + ".html")
+                                _log(f"subtitle {lang} raw={suri[:100]}")
+                                # Build /r/<hash>.html style URLs
+                                candidates = []
                                 if "neocdn" in suri:
-                                    candidates.append(suri.replace(".com/", ".com/r/") + ".vtt")
-                                    candidates.append(suri.replace(".top/", ".top/r/") + ".vtt")
+                                    base = suri.split("/r/")[-1] if "/r/" in suri else suri.split("/")[-1]
+                                    host = suri.split("/")[2]
+                                    candidates.append(f"https://{host}/r/{base}.html")
+                                    candidates.append(f"https://{host}/r/{base}")
+                                    candidates.append(f"https://{host}/{base}.html")
+                                candidates.append(suri)
                                 for cand in candidates:
                                     sr = client.get(cand, headers=probe_headers)
-                                    is_vtt = b"WEBVTT" in sr.content[:30] or b"-->" in sr.content[:500]
-                                    _log(f"  {sr.status_code} vtt={is_vtt} {cand[:80]}")
-                                    if sr.status_code == 200 and is_vtt:
+                                    is_vtt = b"WEBVTT" in sr.content[:40] or (b"-->" in sr.content[:800] and b"<html" not in sr.content[:200].lower())
+                                    _log(f"  {sr.status_code} vtt={is_vtt} len={len(sr.content)} {cand[:70]}")
+                                    if sr.status_code == 200 and is_vtt and len(sr.content) > 100:
                                         sp = STAGING_DIR / f"{job_id}_{lang}.vtt"
                                         sp.write_bytes(sr.content)
                                         sub_files.append((lang, name, sp))
-                                        _log(f"subtitle {lang} saved vtt")
+                                        _log(f"subtitle {lang} saved")
                                         break
                                 else:
-                                    _log(f"subtitle {lang} no vtt found")
+                                    _log(f"subtitle {lang} no vtt")
                             except Exception as exc:
                                 _log(f"subtitle {lang} failed: {exc}")
                         out = STAGING_DIR / f"{job_id}.part.mkv"
@@ -623,34 +623,32 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                ],
             )
-            # Inject into every page/frame created in this context
-            await context.add_init_script("""
-                window.__directarr_found = window.__directarr_found || [];
-                function _check(u) {
-                    if (!u) return;
-                    const s = String(u);
-                    if (s.includes('.m3u8') || s.includes('/cdn/hls/') || s.includes('master.txt') || s.includes('do=getVideo') || s.includes('.mp4')) {
-                        if (!window.__directarr_found.includes(s)) window.__directarr_found.push(s);
-                    }
-                }
-                const _fetch = window.fetch;
-                window.fetch = function(input, init) {
-                    try { _check(typeof input === 'string' ? input : input && input.url); } catch(e) {}
-                    return _fetch.apply(this, arguments);
-                };
-                const _open = XMLHttpRequest.prototype.open;
-                XMLHttpRequest.prototype.open = function(method, url) {
-                    try { _check(url); } catch(e) {}
-                    return _open.apply(this, arguments);
-                };
-            """)
-            page = await context.new_page()
-            page.on("request", on_request)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720},
+                locale="en-US",
+            )
+            # Apply stealth if available
+            try:
+                from playwright_stealth import stealth_async
+                page = await context.new_page()
+                await stealth_async(page)
+                step("stealth applied")
+            except ImportError:
+                page = await context.new_page()
+                step("playwright-stealth not installed; continuing without it")
+            except Exception as exc:
+                page = await context.new_page()
+                step(f"stealth failed: {exc}")
             # Also watch frames as they appear
+            page.on("request", on_request)
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             step("page loaded, looking for play controls")
