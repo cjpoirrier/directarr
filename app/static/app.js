@@ -2212,7 +2212,14 @@
       }
     });
   });
-}
+        }
+      } catch (e) {
+        if (status) status.textContent = e.message || "Capture failed";
+        if (pre) pre.textContent = String(e.message || e);
+      }
+    });
+  }
+
   // Expose for the inline onclick fallback
   window.directarrDetect = detectStreams;
 
