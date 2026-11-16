@@ -669,10 +669,14 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 from camoufox.async_api import AsyncCamoufox
                 import os as _os
                 from pathlib import Path as _Path
-                home = _Path(_os.environ.get("HOME", "/root"))
-                camo_dir = home / ".camoufox"
-                camo_dir.mkdir(parents=True, exist_ok=True)
-                step(f"launching Camoufox (dir={camo_dir})")
+                # Use a writable cache (container home is often read-only)
+                cache_root = _Path("/tmp/camoufox")
+                cache_root.mkdir(parents=True, exist_ok=True)
+                _os.environ["HOME"] = str(cache_root)
+                _os.environ["XDG_CACHE_HOME"] = str(cache_root / ".cache")
+                (cache_root / ".cache" / "camoufox").mkdir(parents=True, exist_ok=True)
+                (cache_root / ".camoufox").mkdir(parents=True, exist_ok=True)
+                step(f"launching Camoufox (cache={cache_root})")
                 camoufox_cm = AsyncCamoufox(headless=True)
                 browser = await camoufox_cm.__aenter__()
                 used_camoufox = True

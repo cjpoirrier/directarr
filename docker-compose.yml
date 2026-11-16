@@ -32,6 +32,7 @@ services:
       - ./config:/config:rw
       - ./downloads:/downloads:rw
       - ./staging:/staging:rw
+      - ./camoufox-data:/root/.camoufox
     # Root filesystem locked down; only the volumes above are writable.
     security_opt:
       - no-new-privileges:true
