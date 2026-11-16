@@ -336,14 +336,20 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         # Build header string for FFmpeg
         hdr_lines = []
         effective_headers = dict(headers or {})
-        # Hosts that require a Referer
+        # Generic Referer: use the page that found the stream, else the stream host
         low = stream_url.lower()
         if "referer" not in {k.lower() for k in effective_headers}:
-            if "kisscloud" in low:
-                effective_headers["Referer"] = "https://kisscloud.online/"
-            elif any(x in low for x in ("nexabloom", "megaplay", "hianime")):
-                effective_headers["Referer"] = "https://megaplay.buzz/"
-                effective_headers["Origin"] = "https://megaplay.buzz"
+            page = (headers or {}).get("Referer") or (headers or {}).get("referer")
+            if page:
+                effective_headers["Referer"] = page
+            else:
+                # Fall back to the stream's own origin
+                from urllib.parse import urlparse
+                p = urlparse(stream_url)
+                if p.scheme and p.netloc:
+                    origin = f"{p.scheme}://{p.netloc}/"
+                    effective_headers["Referer"] = origin
+                    effective_headers.setdefault("Origin", origin.rstrip("/"))
         if "user-agent" not in {k.lower() for k in effective_headers}:
             effective_headers["User-Agent"] = USER_AGENT
         for k, v in effective_headers.items():
@@ -403,9 +409,8 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
-        # For hosts that block FFmpeg's HLS demuxer, download segments ourselves
-        manual_hosts = ("kisscloud", "nexabloom", "megaplay")
-        if any(h in stream_url.lower() for h in manual_hosts) and ".m3u8" in stream_url.lower():
+        # Download segments ourselves for signed/token playlists (avoids FFmpeg 403s)
+        if ".m3u8" in stream_url.lower() and ("token=" in stream_url.lower() or "md5=" in stream_url.lower() or "expires=" in stream_url.lower()):
             try:
                 import httpx as _httpx
                 from urllib.parse import urljoin
@@ -639,6 +644,7 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         _log(msg)
 
     step(f"browser capture start: {url}")
+    result["page_url"] = url
     proxy = get_proxy()
     step(f"proxy: {proxy.split('@')[-1] if proxy else 'none'}")
     try:
@@ -670,68 +676,34 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
 
     try:
         async with async_playwright() as p:
-            browser = None
-            used_camoufox = False
-            # Prefer Camoufox when available (better fingerprint resistance)
-            try:
-                from camoufox.async_api import AsyncCamoufox
-                from pathlib import Path as _Path
-                camo = _Path("/root/.cache/camoufox")
-                # If the volume is mounted here, use it directly. Don't try to symlink.
-                if camo.is_dir() and os.access(camo, os.W_OK):
-                    step(f"launching Camoufox (using mounted {camo})")
-                else:
-                    step(f"Camoufox cache {camo} not writable; skipping")
-                    raise OSError(f"{camo} not writable")
-                camoufox_cm = AsyncCamoufox(headless=True)
-                browser = await camoufox_cm.__aenter__()
-                used_camoufox = True
-                step("Camoufox launched")
-            except Exception as exc:
-                step(f"Camoufox unavailable ({exc}); using Chromium")
-                browser = None
-            if browser is None:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                    ],
-                    proxy={"server": get_proxy()} if get_proxy() else None,
-                )
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                ],
+                proxy={"server": get_proxy()} if get_proxy() else None,
+            )
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 720},
                 locale="en-US",
             )
-            # Apply stealth if available (Chromium only; Camoufox has its own)
-            stealth_ok = used_camoufox
-            if used_camoufox:
-                step("Camoufox in use; skipping playwright-stealth")
-                page = await context.new_page()
-            else:
-                stealth_ok = False
+            # Apply stealth if available
+            page = await context.new_page()
             try:
                 from playwright_stealth import stealth_async
-                page = await context.new_page()
                 await stealth_async(page)
-                stealth_ok = True
-                step("stealth applied (1.x)")
+                step("stealth applied")
             except ImportError:
-                pass
-            if not stealth_ok:
                 try:
                     from playwright_stealth import Stealth
-                    page = await context.new_page()
                     await Stealth().apply_stealth_async(page)
-                    stealth_ok = True
                     step("stealth applied (2.x)")
                 except Exception as exc:
-                    page = await context.new_page()
-                    step(f"stealth not applied: {exc}")
-            if not stealth_ok and "page" not in dir():
-                page = await context.new_page()
-                step("stealth unavailable")
+                    step(f"stealth unavailable: {exc}")
+            except Exception as exc:
+                step(f"stealth failed: {exc}")
             # Also watch frames as they appear
             page.on("request", on_request)
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
@@ -892,11 +864,6 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             except Exception:
                 pass
             await browser.close()
-            if used_camoufox:
-                try:
-                    await camoufox_cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
     except Exception as exc:
         result["error"] = str(exc)
         step(f"browser error: {exc}")
@@ -917,9 +884,10 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         try:
             if ".m3u8" in u.lower():
                 headers = {"User-Agent": USER_AGENT}
-                if any(x in u.lower() for x in ("nexabloom", "hianime", "megaplay")):
-                    headers["Referer"] = "https://megaplay.buzz/"
-                    headers["Origin"] = "https://megaplay.buzz"
+                # Use the captured page as referer when we have it
+                page_ref = result.get("page_url") or url
+                if page_ref:
+                    headers["Referer"] = page_ref
                 probe = await detect_streams(u, headers=headers)
                 kids = probe.get("variants") or []
                 step(f"probe {u[:50]} status-log={probe.get('log', [''])[-1][:80] if probe.get('log') else ''} variants={len(kids)}")
