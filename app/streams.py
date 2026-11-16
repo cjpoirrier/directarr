@@ -7,6 +7,7 @@ user pick a quality, and downloads via FFmpeg into the existing queue.
 from __future__ import annotations
 
 import logging
+import json
 import re
 import subprocess
 import uuid
@@ -17,7 +18,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import os
 
-from .config import DOWNLOAD_DIR, STAGING_DIR
+from .config import DOWNLOAD_DIR, FLARESOLVERR_URL, STAGING_DIR
 from .db import connect
 
 log = logging.getLogger("directarr.streams")
@@ -58,6 +59,37 @@ def httpx_sync_client(**kwargs):
     if proxy:
         kwargs.setdefault("proxy", proxy)
     return httpx.Client(**kwargs)
+
+
+async def _fetch_text(url: str, headers: dict | None = None, timeout: int = 20) -> tuple[str, str, int]:
+    """Fetch text directly or through an optional FlareSolverr-compatible API."""
+    if FLARESOLVERR_URL:
+        payload: dict[str, Any] = {
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": max(1000, timeout * 1000),
+        }
+        if headers:
+            payload["headers"] = headers
+        async with httpx.AsyncClient(timeout=timeout + 15) as client:
+            response = await client.post(FLARESOLVERR_URL, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        if data.get("status") != "ok":
+            raise RuntimeError(data.get("message") or "URL fetch service returned an error")
+        solution = data.get("solution") or {}
+        status_code = int(solution.get("status") or 200)
+        if status_code < 200 or status_code >= 400:
+            raise RuntimeError(f"URL fetch target returned HTTP {status_code}")
+        text = solution.get("response")
+        if not isinstance(text, str):
+            raise RuntimeError("URL fetch service returned no text response")
+        return text, solution.get("url") or url, status_code
+
+    async with httpx_client(follow_redirects=True, timeout=timeout) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.text, str(response.url), response.status_code
 
 # Simple ring buffer for recent stream-related log lines (shared with main)
 _LOG_BUFFER: list[str] = []
@@ -111,14 +143,15 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
         _log(msg)
 
     step(f"detect start: {url}")
+    step(
+        f"fetch service: FlareSolverr ({FLARESOLVERR_URL})"
+        if FLARESOLVERR_URL
+        else "fetch service: direct HTTP"
+    )
 
     try:
-        async with httpx_client(follow_redirects=True, timeout=20) as client:
-            r = await client.get(url, headers=headers)
-            r.raise_for_status()
-            text = r.text
-            final_url = str(r.url)
-        step(f"fetched {final_url} status={r.status_code} bytes={len(text)}")
+        text, final_url, status_code = await _fetch_text(url, headers=headers, timeout=60)
+        step(f"fetched {final_url} status={status_code} bytes={len(text)}")
     except Exception as exc:
         step(f"fetch failed: {exc}")
         result["error"] = str(exc)
@@ -148,18 +181,17 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
             api = doo.group(1).rstrip("/") + f"/{post.group(1)}/{ptype.group(1)}/{nume.group(1)}"
             step(f"dooplay api: {api}")
             try:
-                async with httpx_client(follow_redirects=True, timeout=15) as client:
-                    pr = await client.get(api, headers={**headers, "Referer": final_url})
-                    pr.raise_for_status()
-                    pdata = pr.json()
+                pr_text, _, _ = await _fetch_text(
+                    api, headers={**headers, "Referer": final_url}, timeout=15
+                )
+                pdata = json.loads(pr_text)
                 embed = (pdata or {}).get("embed_url") or ""
                 step(f"dooplay embed: {embed or 'none'}")
                 if embed:
                     # Follow embed and look for m3u8/mp4
-                    async with httpx_client(follow_redirects=True, timeout=15) as client:
-                        er = await client.get(embed, headers={**headers, "Referer": final_url})
-                        er.raise_for_status()
-                        etext = er.text
+                    etext, _, _ = await _fetch_text(
+                        embed, headers={**headers, "Referer": final_url}, timeout=15
+                    )
                     found = re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', etext, re.I)
                     step(f"embed scan found {len(found)} media urls")
                     if found:
@@ -195,15 +227,13 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
     for murl in m3u8_urls[:3]:
         try:
             step(f"fetching candidate {murl}")
-            async with httpx_client(follow_redirects=True, timeout=15) as client:
-                mr = await client.get(murl, headers=headers)
-                mr.raise_for_status()
-                parsed = _parse_m3u8(mr.text, str(mr.url))
-                step(f"candidate parsed type={parsed['type']} variants={len(parsed['variants'])}")
-                if parsed["variants"]:
-                    parsed["type"] = "master" if parsed["type"] == "master" else "media"
-                    parsed["log"] = result["log"]
-                    return parsed
+            mtext, media_url, _ = await _fetch_text(murl, headers=headers, timeout=15)
+            parsed = _parse_m3u8(mtext, media_url)
+            step(f"candidate parsed type={parsed['type']} variants={len(parsed['variants'])}")
+            if parsed["variants"]:
+                parsed["type"] = "master" if parsed["type"] == "master" else "media"
+                parsed["log"] = result["log"]
+                return parsed
         except Exception as exc:
             step(f"candidate failed: {exc}")
             continue

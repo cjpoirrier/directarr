@@ -56,6 +56,7 @@ ALLOWED_HOSTS = {
     for v in os.getenv("DIRECTARR_ALLOWED_HOSTS", "").split(",")
     if v.strip()
 }
+FLARESOLVERR_URL = os.getenv("DIRECTARR_FLARESOLVERR_URL", "").strip().rstrip("/")
 
 # Google Drive OAuth (operator must place client secrets + complete auth once).
 GDRIVE_CLIENT_SECRETS = os.getenv(

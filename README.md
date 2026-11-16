@@ -21,6 +21,8 @@ The Torznab indexer API can be added to Sonarr as a Torznab custom indexer. Howe
 4. Open the web UI at `http://YOUR-SERVER-IP:8787/`.
 5. API docs: `http://YOUR-SERVER-IP:8787/docs`.
 
+Stream URL detection can optionally send pasted URLs through a FlareSolverr-compatible service. Set `DIRECTARR_FLARESOLVERR_URL` to its `/v1` endpoint; Docker Compose defaults to `http://10.0.0.93:8191/v1`. The Directarr container must be able to reach that address. Leave it empty to fetch URLs directly.
+
 Local (no Docker): from the project root, with deps installed:
 `DIRECTARR_API_KEY=your-key DIRECTARR_PASSWORD=secret python -m uvicorn app.main:app --host 0.0.0.0 --port 8787`
 
