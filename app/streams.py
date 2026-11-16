@@ -753,7 +753,10 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                         break
                 except Exception:
                     pass
-            await page.wait_for_timeout(6000)
+            try:
+                await page.wait_for_timeout(6000)
+            except Exception as exc:
+                step(f"wait interrupted: {exc}")
             # Check for iframes and try to interact
             frames = page.frames
             step(f"frames: {len(frames)}")
@@ -773,7 +776,10 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 page2.on("request", on_request)
                 try:
                     await page2.goto(kisscloud, wait_until="domcontentloaded", timeout=15000)
-                    await page2.wait_for_timeout(5000)
+                    try:
+                        await page2.wait_for_timeout(5000)
+                    except Exception:
+                        pass
                     # Try the getVideo API directly if we can extract the id
                     vid = kisscloud.rstrip("/").split("/")[-1]
                     if vid and len(vid) > 8:
@@ -830,7 +836,10 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                                 break
                         except Exception:
                             pass
-                    await page2.wait_for_timeout(6000)
+                    try:
+                        await page2.wait_for_timeout(6000)
+                    except Exception:
+                        pass
                     # Collect from this page too
                     try:
                         injected2 = await page2.evaluate("() => window.__directarr_found || []")
@@ -843,7 +852,10 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 except Exception as exc:
                     step(f"embed open failed: {exc}")
                 await page2.close()
-            await page.wait_for_timeout(2000)
+            try:
+                await page.wait_for_timeout(2000)
+            except Exception:
+                pass
             if seen_urls:
                 step("sample requests: " + " | ".join(seen_urls[:8]))
             # Pull URLs collected by the injected script
