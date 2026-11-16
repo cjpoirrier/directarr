@@ -2056,15 +2056,14 @@
         pre.textContent = (res.log || []).join("\n") || "(no steps returned)";
       }
       if (res.error && !(res.variants || []).length) {
-        if (status) status.textContent = res.error;
-        return;
+        if (status) status.textContent = "No playlist in page; trying browser capture…";
+        if (pre) pre.textContent += "\n\nFalling back to browser capture…";
+        return captureStreams();
       }
       const variants = res.variants || [];
-      if (status) status.textContent = variants.length ? `${variants.length} variant(s) found` : "No variants found";
-      if (!table) return;
       if (!variants.length) {
-        table.innerHTML = "<p class='hint'>No playable variants detected. Try pasting a direct .m3u8 URL.</p>";
-        return;
+        if (status) status.textContent = "No playlist in page; trying browser capture…";
+        return captureStreams();
       }
       table.innerHTML = `
         <table class="data">
@@ -2149,6 +2148,57 @@
   const streamLogBtn = $("#stream-log-refresh");
   if (streamLogBtn) streamLogBtn.addEventListener("click", loadStreamLog);
 
+  async function captureStreams() {
+    const url = $("#stream-url")?.value?.trim();
+    const status = $("#stream-status");
+    const pre = $("#stream-log");
+    const table = $("#stream-variants");
+    if (!url) { if (status) status.textContent = "Paste a URL first"; return; }
+    if (status) status.textContent = "Capturing with browser…";
+    if (pre) pre.textContent = (pre.textContent ? pre.textContent + "\n" : "") + "Loading page in headless browser…";
+    try {
+      const res = await api("/api/v1/streams/capture", { method: "POST", body: { url } });
+      if (pre && res.log) pre.textContent = (res.log || []).join("\n");
+      const variants = res.variants || [];
+      const pageTitle = res.title || "captured";
+      if (status) status.textContent = variants.length ? variants.length + " captured" : (res.error || "Nothing captured");
+      if (table && variants.length) {
+        table.innerHTML = variants.map((v, index) =>
+          '<div class="row" style="margin:0.25rem 0; align-items:center; gap:0.5rem">' +
+            '<strong style="min-width:4.5rem">' + escapeHtml(v.resolution || "?") + '</strong>' +
+            '<code style="flex:1; font-size:0.8rem">' + escapeHtml(v.url) + '</code>' +
+            '<button class="btn sm primary" data-stream-index="' + index + '"' +
+              ' data-stream-title="' + escapeHtml(pageTitle) + '">Download</button>' +
+          '</div>'
+        ).join("");
+        table.querySelectorAll("button[data-stream-index]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const variant = variants[Number(btn.dataset.streamIndex)];
+            if (!variant) return;
+            btn.disabled = true;
+            try {
+              await api("/api/v1/streams/download", {
+                method: "POST",
+                body: {
+                  title: btn.getAttribute("data-stream-title") || pageTitle,
+                  url: variant.url,
+                  headers: variant.headers || {},
+                },
+              });
+              btn.textContent = "Queued";
+            } catch (e) {
+              btn.disabled = false;
+              if (status) status.textContent = e.message || "Queue failed";
+            }
+          });
+        });
+      }
+    } catch (e) {
+      if (status) status.textContent = e.message || "Capture failed";
+      if (pre) pre.textContent += "\n" + String(e.message || e);
+    }
+  }
+
   const streamBtn = $("#stream-detect-btn");
   if (streamBtn) {
     streamBtn.addEventListener("click", (ev) => {
@@ -2182,15 +2232,16 @@
         if (status) status.textContent = variants.length ? variants.length + " captured" : (res.error || "Nothing captured");
         const table = $("#stream-variants");
         if (table && variants.length) {
-  table.innerHTML = variants.map((v, index) =>
-    '<div class="row" style="margin:0.25rem 0">' +
-      '<code style="flex:1">' + escapeHtml(v.url) + '</code>' +
-      '<button class="btn sm primary" data-stream-index="' + index + '"' +
-        ' data-stream-title="' + escapeHtml(pageTitle) + '">Download</button>' +
-    '</div>'
-  ).join("");
+          table.innerHTML = variants.map((v, index) =>
+            '<div class="row" style="margin:0.25rem 0; align-items:center; gap:0.5rem">' +
+              '<strong style="min-width:4.5rem">' + escapeHtml(v.resolution || "?") + '</strong>' +
+              '<code style="flex:1; font-size:0.8rem">' + escapeHtml(v.url) + '</code>' +
+              '<button class="btn sm primary" data-stream-index="' + index + '"' +
+                ' data-stream-title="' + escapeHtml(pageTitle) + '">Download</button>' +
+            '</div>'
+          ).join("");
 
-  table.querySelectorAll("button[data-stream-index]").forEach((btn) => {
+          table.querySelectorAll("button[data-stream-index]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const variant = variants[Number(btn.dataset.streamIndex)];
       if (!variant) return;

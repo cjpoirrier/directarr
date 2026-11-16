@@ -140,8 +140,7 @@
           <p class="hint">Paste a page URL or a direct .m3u8 link. Directarr will look for HLS playlists and list available qualities.</p>
           <form id="stream-detect-form" class="row" style="gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem" onsubmit="return false;">
             <input id="stream-url" type="url" placeholder="https://example.com/episode or https://.../playlist.m3u8" style="flex:1;min-width:280px" />
-            <button class="btn primary" id="stream-detect-btn" type="button" onclick="window.directarrDetect && window.directarrDetect()">Detect</button>
-            <button class="btn" id="stream-capture-btn" type="button">Capture (browser)</button>
+            <button class="btn primary" id="stream-detect-btn" type="button">Detect</button>
             <button class="btn" id="stream-open-btn" type="button">Open in browser</button>
           </form>
           <div id="stream-status" class="hint" style="margin-top:0.5rem"></div>
@@ -245,24 +244,6 @@
                     <div class="settings-field">
                       <input id="settings-allowed-hosts" type="text" placeholder="example.com, media.lan" autocomplete="off" />
                       <p class="hint">Comma-separated hostnames for outbound download allow-lists (optional).</p>
-                    </div>
-                  </div>
-                </div>
-                <div class="panel">
-                  <h2>Stream Fetching</h2>
-                  <div class="settings-grid">
-                    <div class="settings-label">Use FlareSolverr</div>
-                    <div class="settings-field">
-                      <label class="switch">
-                        <input type="checkbox" id="settings-flaresolverr-enabled" />
-                        <span class="slider"></span>
-                      </label>
-                      <p class="hint">When enabled, the Detect button sends page and playlist requests through this service. Capture (browser) always uses Playwright directly.</p>
-                    </div>
-                    <div class="settings-label">FlareSolverr URL</div>
-                    <div class="settings-field">
-                      <input id="settings-flaresolverr-url" type="url" placeholder="http://10.0.0.93:8191/v1" autocomplete="url" />
-                      <p class="hint">The endpoint must be reachable from the Directarr container. Leave the toggle off to disable it.</p>
                     </div>
                   </div>
                 </div>

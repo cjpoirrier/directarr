@@ -650,6 +650,8 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         if len(seen_urls) < 30 and not any(x in u for x in [".js", ".css", ".png", ".jpg", ".woff", "google", "analytics"]):
             seen_urls.append(u.split("?")[0][:120])
         if ".m3u8" in u.lower() or ".mp4" in u.lower():
+            if "ping.gif" in u.lower() or "jwpltx" in u.lower() or "analytics" in u.lower():
+                return
             if u not in found:
                 found.append(u)
                 step(f"captured media {u}")
@@ -764,7 +766,7 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 try:
                     if frame.url and frame.url != url and "about:" not in frame.url:
                         step(f"frame: {frame.url[:100]}")
-                        if any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed")):
+                        if any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed", "megaplay")):
                             kisscloud = frame.url
                 except Exception:
                     pass
@@ -886,8 +888,22 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 cleaned.append(u)
     if cleaned:
         found = cleaned
-    for u in found[:10]:
-        result["variants"].append({
+    # Expand master playlists into quality variants
+    expanded = []
+    for u in found[:5]:
+        try:
+            if ".m3u8" in u.lower():
+                probe = await detect_streams(u)
+                kids = probe.get("variants") or []
+                if len(kids) > 1 or (kids and kids[0].get("resolution") not in ("original", "captured", "")):
+                    for k in kids:
+                        k["name"] = "browser"
+                        expanded.append(k)
+                        step(f"quality {k.get('resolution')} bw={k.get('bandwidth')} {k.get('url','')[:70]}")
+                    continue
+        except Exception as exc:
+            step(f"quality probe failed: {exc}")
+        expanded.append({
             "url": u,
             "resolution": "captured",
             "bandwidth": 0,
@@ -895,6 +911,8 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             "name": "browser",
             "average_bandwidth": 0,
         })
+    for v in expanded[:12]:
+        result["variants"].append(v)
     if not found:
         result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
         step(result["error"])
