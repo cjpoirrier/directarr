@@ -10,6 +10,7 @@ import logging
 import json
 import re
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -156,9 +157,9 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
         "log": [],
     }
 
-    def step(msg: str) -> None:
+    def step(msg: str, level: str = "info") -> None:
         result["log"].append(msg)
-        _log(msg)
+        _log(msg, level)
 
     step(f"detect start: {url}")
     flaresolverr_url = effective_flaresolverr_url()
@@ -681,9 +682,9 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
     """
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": []}
 
-    def step(msg: str) -> None:
+    def step(msg: str, level: str = "info") -> None:
         result["log"].append(msg)
-        _log(msg)
+        _log(msg, level)
 
     step(f"browser capture start: {url}")
     proxy = get_proxy()
@@ -754,7 +755,29 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             # Also watch frames as they appear
             page.on("request", on_request)
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            nav_started = time.monotonic()
+            step(f"navigation started: {url}")
+            try:
+                response = await page.goto(
+                    url, wait_until="domcontentloaded", timeout=timeout * 1000
+                )
+            except Exception as exc:
+                elapsed = time.monotonic() - nav_started
+                step(
+                    f"navigation failed after {elapsed:.2f}s: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                raise
+            elapsed = time.monotonic() - nav_started
+            if response is None:
+                step(f"navigation completed after {elapsed:.2f}s without an HTTP response")
+            else:
+                step(
+                    f"navigation response: status={response.status} "
+                    f"url={response.url} elapsed={elapsed:.2f}s"
+                )
+                if response.status >= 400:
+                    step(f"navigation returned HTTP error status {response.status}", "warning")
             step("page loaded, looking for play controls")
             try:
                 page_title = await page.title()
@@ -884,7 +907,7 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             await browser.close()
     except Exception as exc:
         result["error"] = str(exc)
-        step(f"browser error: {exc}")
+        step(f"browser error: {type(exc).__name__}: {exc}", "error")
         return result
 
     # Prefer signed m3u8; drop embed pages and API endpoints from the list
