@@ -635,18 +635,29 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 viewport={"width": 1280, "height": 720},
                 locale="en-US",
             )
-            # Apply stealth if available
+            # Apply stealth if available (supports 1.x and 2.x)
+            stealth_ok = False
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
                 await stealth_async(page)
-                step("stealth applied")
+                stealth_ok = True
+                step("stealth applied (1.x)")
             except ImportError:
+                pass
+            if not stealth_ok:
+                try:
+                    from playwright_stealth import Stealth
+                    page = await context.new_page()
+                    await Stealth().apply_stealth_async(page)
+                    stealth_ok = True
+                    step("stealth applied (2.x)")
+                except Exception as exc:
+                    page = await context.new_page()
+                    step(f"stealth not applied: {exc}")
+            if not stealth_ok and "page" not in dir():
                 page = await context.new_page()
-                step("playwright-stealth not installed; continuing without it")
-            except Exception as exc:
-                page = await context.new_page()
-                step(f"stealth failed: {exc}")
+                step("stealth unavailable")
             # Also watch frames as they appear
             page.on("request", on_request)
             page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
