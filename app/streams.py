@@ -667,21 +667,14 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             # Prefer Camoufox when available (better fingerprint resistance)
             try:
                 from camoufox.async_api import AsyncCamoufox
-                import os as _os
                 from pathlib import Path as _Path
-                cache_root = _Path("/config/camoufox")
-                cache_root.mkdir(parents=True, exist_ok=True)
-                # Camoufox hardcodes ~/.cache/camoufox — symlink it to the writable volume
-                real_cache = _Path("/root/.cache/camoufox")
-                real_cache.parent.mkdir(parents=True, exist_ok=True)
-                if real_cache.is_symlink() or real_cache.exists():
-                    if real_cache.is_symlink():
-                        real_cache.unlink()
-                    elif real_cache.is_dir() and not any(real_cache.iterdir()):
-                        real_cache.rmdir()
-                if not real_cache.exists():
-                    real_cache.symlink_to(cache_root)
-                step(f"launching Camoufox (linked {real_cache} -> {cache_root})")
+                camo = _Path("/root/.cache/camoufox")
+                # If the volume is mounted here, use it directly. Don't try to symlink.
+                if camo.is_dir() and os.access(camo, os.W_OK):
+                    step(f"launching Camoufox (using mounted {camo})")
+                else:
+                    step(f"Camoufox cache {camo} not writable; skipping")
+                    raise OSError(f"{camo} not writable")
                 camoufox_cm = AsyncCamoufox(headless=True)
                 browser = await camoufox_cm.__aenter__()
                 used_camoufox = True
