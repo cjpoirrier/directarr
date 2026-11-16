@@ -667,7 +667,12 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             # Prefer Camoufox when available (better fingerprint resistance)
             try:
                 from camoufox.async_api import AsyncCamoufox
-                step("launching Camoufox")
+                import os as _os
+                from pathlib import Path as _Path
+                home = _Path(_os.environ.get("HOME", "/root"))
+                camo_dir = home / ".camoufox"
+                camo_dir.mkdir(parents=True, exist_ok=True)
+                step(f"launching Camoufox (dir={camo_dir})")
                 camoufox_cm = AsyncCamoufox(headless=True)
                 browser = await camoufox_cm.__aenter__()
                 used_camoufox = True
