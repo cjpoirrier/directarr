@@ -12,14 +12,15 @@ import re
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
 import httpx
 import os
 
-from .config import DOWNLOAD_DIR, FLARESOLVERR_URL, STAGING_DIR
+from .config import DOWNLOAD_DIR, STAGING_DIR
 from .db import connect
+from .settings_store import effective_flaresolverr_url
 
 log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
@@ -61,9 +62,17 @@ def httpx_sync_client(**kwargs):
     return httpx.Client(**kwargs)
 
 
-async def _fetch_text(url: str, headers: dict | None = None, timeout: int = 20) -> tuple[str, str, int]:
+async def _fetch_text(
+    url: str,
+    headers: dict | None = None,
+    timeout: int = 20,
+    log_fn: Callable[[str], None] | None = None,
+) -> tuple[str, str, int]:
     """Fetch text directly or through an optional FlareSolverr-compatible API."""
-    if FLARESOLVERR_URL:
+    emit = log_fn or _log
+    flaresolverr_url = effective_flaresolverr_url()
+    if flaresolverr_url:
+        emit(f"request via FlareSolverr: {url}")
         payload: dict[str, Any] = {
             "cmd": "request.get",
             "url": url,
@@ -71,12 +80,18 @@ async def _fetch_text(url: str, headers: dict | None = None, timeout: int = 20) 
         }
         if headers:
             payload["headers"] = headers
-        async with httpx.AsyncClient(timeout=timeout + 15) as client:
-            response = await client.post(FLARESOLVERR_URL, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=timeout + 15) as client:
+                response = await client.post(flaresolverr_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            emit(f"FlareSolverr request failed: {exc}")
+            raise
         if data.get("status") != "ok":
-            raise RuntimeError(data.get("message") or "URL fetch service returned an error")
+            message = data.get("message") or "URL fetch service returned an error"
+            emit(f"FlareSolverr returned an error: {message}")
+            raise RuntimeError(message)
         solution = data.get("solution") or {}
         status_code = int(solution.get("status") or 200)
         if status_code < 200 or status_code >= 400:
@@ -84,11 +99,14 @@ async def _fetch_text(url: str, headers: dict | None = None, timeout: int = 20) 
         text = solution.get("response")
         if not isinstance(text, str):
             raise RuntimeError("URL fetch service returned no text response")
+        emit(f"FlareSolverr completed: target_status={status_code} bytes={len(text)}")
         return text, solution.get("url") or url, status_code
 
+    emit(f"request via direct HTTP: {url}")
     async with httpx_client(follow_redirects=True, timeout=timeout) as client:
         response = await client.get(url, headers=headers)
         response.raise_for_status()
+        emit(f"direct HTTP completed: status={response.status_code} bytes={len(response.text)}")
         return response.text, str(response.url), response.status_code
 
 # Simple ring buffer for recent stream-related log lines (shared with main)
@@ -143,14 +161,17 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
         _log(msg)
 
     step(f"detect start: {url}")
+    flaresolverr_url = effective_flaresolverr_url()
     step(
-        f"fetch service: FlareSolverr ({FLARESOLVERR_URL})"
-        if FLARESOLVERR_URL
+        f"fetch service: FlareSolverr ({flaresolverr_url})"
+        if flaresolverr_url
         else "fetch service: direct HTTP"
     )
 
     try:
-        text, final_url, status_code = await _fetch_text(url, headers=headers, timeout=60)
+        text, final_url, status_code = await _fetch_text(
+            url, headers=headers, timeout=60, log_fn=step
+        )
         step(f"fetched {final_url} status={status_code} bytes={len(text)}")
     except Exception as exc:
         step(f"fetch failed: {exc}")
@@ -182,7 +203,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
             step(f"dooplay api: {api}")
             try:
                 pr_text, _, _ = await _fetch_text(
-                    api, headers={**headers, "Referer": final_url}, timeout=15
+                    api, headers={**headers, "Referer": final_url}, timeout=15, log_fn=step
                 )
                 pdata = json.loads(pr_text)
                 embed = (pdata or {}).get("embed_url") or ""
@@ -190,7 +211,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
                 if embed:
                     # Follow embed and look for m3u8/mp4
                     etext, _, _ = await _fetch_text(
-                        embed, headers={**headers, "Referer": final_url}, timeout=15
+                        embed, headers={**headers, "Referer": final_url}, timeout=15, log_fn=step
                     )
                     found = re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', etext, re.I)
                     step(f"embed scan found {len(found)} media urls")
@@ -227,7 +248,9 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
     for murl in m3u8_urls[:3]:
         try:
             step(f"fetching candidate {murl}")
-            mtext, media_url, _ = await _fetch_text(murl, headers=headers, timeout=15)
+            mtext, media_url, _ = await _fetch_text(
+                murl, headers=headers, timeout=15, log_fn=step
+            )
             parsed = _parse_m3u8(mtext, media_url)
             step(f"candidate parsed type={parsed['type']} variants={len(parsed['variants'])}")
             if parsed["variants"]:

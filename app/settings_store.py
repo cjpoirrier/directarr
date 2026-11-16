@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import config
 
@@ -17,6 +18,8 @@ _DEFAULTS: dict[str, Any] = {
     "auth_mode": None,  # None = use env; "forms" | "none"
     "auth_username": None,  # None = use env
     "auth_required": True,
+    "flaresolverr_enabled": None,
+    "flaresolverr_url": None,
 }
 
 
@@ -60,6 +63,14 @@ def load_settings() -> dict[str, Any]:
     auth_required = raw.get("auth_required")
     if auth_required is None:
         auth_required = mode != "none"
+    flaresolverr_url = str(
+        raw.get("flaresolverr_url")
+        if raw.get("flaresolverr_url") is not None
+        else config.FLARESOLVERR_URL
+    ).strip().rstrip("/")
+    flaresolverr_enabled = raw.get("flaresolverr_enabled")
+    if flaresolverr_enabled is None:
+        flaresolverr_enabled = bool(flaresolverr_url)
     return {
         "bind_address": str(raw.get("bind_address") or "0.0.0.0"),
         "port": port,
@@ -68,6 +79,8 @@ def load_settings() -> dict[str, Any]:
         "auth_mode": mode,
         "auth_username": str(user),
         "auth_required": bool(auth_required),
+        "flaresolverr_enabled": bool(flaresolverr_enabled),
+        "flaresolverr_url": flaresolverr_url,
         "api_key": config.API_KEY,
         "torznab_path": "/api",
     }
@@ -111,6 +124,22 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         if len(user) > 128:
             raise ValueError("Username too long")
         raw["auth_username"] = user
+    if "flaresolverr_url" in patch:
+        endpoint = str(patch["flaresolverr_url"] or "").strip().rstrip("/")
+        if len(endpoint) > 2048:
+            raise ValueError("FlareSolverr URL is too long")
+        if endpoint:
+            parsed = urlsplit(endpoint)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise ValueError("FlareSolverr URL must be an absolute http:// or https:// URL")
+        raw["flaresolverr_url"] = endpoint
+    if "flaresolverr_enabled" in patch and patch["flaresolverr_enabled"] is not None:
+        enabled = bool(patch["flaresolverr_enabled"])
+        if enabled and not str(
+            raw.get("flaresolverr_url") or config.FLARESOLVERR_URL
+        ).strip():
+            raise ValueError("Set the FlareSolverr URL before enabling it")
+        raw["flaresolverr_enabled"] = enabled
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     # Keep in-memory auth mirrors in sync for this process
@@ -130,3 +159,8 @@ def effective_auth_mode() -> str:
 def effective_username() -> str:
     s = load_settings()
     return str(s.get("auth_username") or config.AUTH_USERNAME or "admin")
+
+
+def effective_flaresolverr_url() -> str:
+    s = load_settings()
+    return str(s.get("flaresolverr_url") or "") if s.get("flaresolverr_enabled") else ""

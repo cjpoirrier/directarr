@@ -675,6 +675,8 @@ class GeneralSettingsPatch(BaseModel):
     auth_mode: str | None = None
     auth_required: bool | None = None
     auth_username: str | None = None
+    flaresolverr_enabled: bool | None = None
+    flaresolverr_url: str | None = None
     current_password: str | None = None
     new_password: str | None = None
 

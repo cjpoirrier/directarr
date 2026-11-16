@@ -249,6 +249,24 @@
                   </div>
                 </div>
                 <div class="panel">
+                  <h2>Stream Fetching</h2>
+                  <div class="settings-grid">
+                    <div class="settings-label">Use FlareSolverr</div>
+                    <div class="settings-field">
+                      <label class="switch">
+                        <input type="checkbox" id="settings-flaresolverr-enabled" />
+                        <span class="slider"></span>
+                      </label>
+                      <p class="hint">When enabled, stream detection requests use the configured FlareSolverr-compatible service. Turn off to fetch directly.</p>
+                    </div>
+                    <div class="settings-label">FlareSolverr URL</div>
+                    <div class="settings-field">
+                      <input id="settings-flaresolverr-url" type="url" placeholder="http://10.0.0.93:8191/v1" autocomplete="url" />
+                      <p class="hint">The endpoint must be reachable from the Directarr container. Leave the toggle off to disable it.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
                   <h2>Proxies</h2>
                   <p class="hint">Tag a proxy and a source with the same tag to route that source through the proxy (like Prowlarr).</p>
                   <div id="proxy-list"></div>

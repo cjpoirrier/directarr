@@ -1076,6 +1076,9 @@
       setVal("#settings-port", data.port != null ? data.port : location.port || 8787);
       setVal("#settings-url-base", data.url_base || "");
       setVal("#settings-allowed-hosts", data.allowed_hosts || "");
+      setVal("#settings-flaresolverr-url", data.flaresolverr_url || "");
+      const flaresolverrEnabled = $("#settings-flaresolverr-enabled");
+      if (flaresolverrEnabled) flaresolverrEnabled.checked = !!data.flaresolverr_enabled;
       setVal("#settings-auth-user", data.auth_username || "admin");
       const authMode = $("#settings-auth-mode");
       if (authMode) authMode.value = (data.auth_mode || "forms").toLowerCase() === "none" ? "none" : "forms";
@@ -1100,6 +1103,8 @@
       port: Number(($("#settings-port") && $("#settings-port").value) || 8787),
       url_base: ($("#settings-url-base") && $("#settings-url-base").value.trim()) || "",
       allowed_hosts: ($("#settings-allowed-hosts") && $("#settings-allowed-hosts").value.trim()) || "",
+      flaresolverr_enabled: !!($("#settings-flaresolverr-enabled") && $("#settings-flaresolverr-enabled").checked),
+      flaresolverr_url: ($("#settings-flaresolverr-url") && $("#settings-flaresolverr-url").value.trim()) || "",
       auth_mode: ($("#settings-auth-mode") && $("#settings-auth-mode").value) || "forms",
       auth_username: ($("#settings-auth-user") && $("#settings-auth-user").value.trim()) || "admin",
     };
