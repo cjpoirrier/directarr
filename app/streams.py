@@ -336,9 +336,14 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         # Build header string for FFmpeg
         hdr_lines = []
         effective_headers = dict(headers or {})
-        # Kisscloud / similar hosts require a Referer
-        if "kisscloud" in stream_url.lower() and "referer" not in {k.lower() for k in effective_headers}:
-            effective_headers["Referer"] = "https://kisscloud.online/"
+        # Hosts that require a Referer
+        low = stream_url.lower()
+        if "referer" not in {k.lower() for k in effective_headers}:
+            if "kisscloud" in low:
+                effective_headers["Referer"] = "https://kisscloud.online/"
+            elif any(x in low for x in ("nexabloom", "megaplay", "hianime")):
+                effective_headers["Referer"] = "https://megaplay.buzz/"
+                effective_headers["Origin"] = "https://megaplay.buzz"
         if "user-agent" not in {k.lower() for k in effective_headers}:
             effective_headers["User-Agent"] = USER_AGENT
         for k, v in effective_headers.items():
@@ -398,8 +403,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
-        # For kisscloud-style playlists, download segments ourselves
-        if "kisscloud" in stream_url.lower() and ".m3u8" in stream_url.lower():
+        # For hosts that block FFmpeg's HLS demuxer, download segments ourselves
+        manual_hosts = ("kisscloud", "nexabloom", "megaplay")
+        if any(h in stream_url.lower() for h in manual_hosts) and ".m3u8" in stream_url.lower():
             try:
                 import httpx as _httpx
                 from urllib.parse import urljoin
