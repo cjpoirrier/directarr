@@ -669,11 +669,9 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 from camoufox.async_api import AsyncCamoufox
                 import os as _os
                 from pathlib import Path as _Path
-                cache_root = _Path("/tmp/camoufox")
+                cache_root = _Path("/config/camoufox")
                 cache_root.mkdir(parents=True, exist_ok=True)
                 (cache_root / ".cache" / "camoufox").mkdir(parents=True, exist_ok=True)
-                # Point only Camoufox at the writable cache; do not change HOME
-                # (changing HOME breaks Playwright's browser lookup)
                 _os.environ["CAMOUFOX_CACHE"] = str(cache_root / ".cache" / "camoufox")
                 step(f"launching Camoufox (cache={cache_root})")
                 camoufox_cm = AsyncCamoufox(headless=True)
