@@ -893,12 +893,13 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
     for u in found[:5]:
         try:
             if ".m3u8" in u.lower():
-                headers = {}
-                if "nexabloom" in u.lower() or "hianime" in u.lower() or "megaplay" in u.lower():
-                    headers["Referer"] = "https://hianime.ms/"
+                headers = {"User-Agent": USER_AGENT}
+                if any(x in u.lower() for x in ("nexabloom", "hianime", "megaplay")):
+                    headers["Referer"] = "https://megaplay.buzz/"
+                    headers["Origin"] = "https://megaplay.buzz"
                 probe = await detect_streams(u, headers=headers)
                 kids = probe.get("variants") or []
-                step(f"probe {u[:60]} -> {len(kids)} variants type={probe.get('type')}")
+                step(f"probe {u[:50]} status-log={probe.get('log', [''])[-1][:80] if probe.get('log') else ''} variants={len(kids)}")
                 real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
                 if real:
                     for k in real:
