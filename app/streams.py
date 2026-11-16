@@ -15,12 +15,33 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
+import os
 
 from .config import DOWNLOAD_DIR, STAGING_DIR
 from .db import connect
 
 log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
+
+def get_proxy() -> str | None:
+    """Return proxy URL from env, or None.
+
+    Set DIRECTARR_PROXY=http://user:pass@host:port or socks5://host:port
+    """
+    return os.environ.get("DIRECTARR_PROXY") or None
+
+def httpx_client(**kwargs):
+    """httpx client that uses DIRECTARR_PROXY when set."""
+    proxy = get_proxy()
+    if proxy:
+        kwargs.setdefault("proxy", proxy)
+    return httpx.AsyncClient(**kwargs)
+
+def httpx_sync_client(**kwargs):
+    proxy = get_proxy()
+    if proxy:
+        kwargs.setdefault("proxy", proxy)
+    return httpx.Client(**kwargs)
 
 # Simple ring buffer for recent stream-related log lines (shared with main)
 _LOG_BUFFER: list[str] = []
@@ -76,7 +97,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
     step(f"detect start: {url}")
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+        async with httpx_client(follow_redirects=True, timeout=20) as client:
             r = await client.get(url, headers=headers)
             r.raise_for_status()
             text = r.text
@@ -111,7 +132,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
             api = doo.group(1).rstrip("/") + f"/{post.group(1)}/{ptype.group(1)}/{nume.group(1)}"
             step(f"dooplay api: {api}")
             try:
-                async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                async with httpx_client(follow_redirects=True, timeout=15) as client:
                     pr = await client.get(api, headers={**headers, "Referer": final_url})
                     pr.raise_for_status()
                     pdata = pr.json()
@@ -119,7 +140,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
                 step(f"dooplay embed: {embed or 'none'}")
                 if embed:
                     # Follow embed and look for m3u8/mp4
-                    async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                    async with httpx_client(follow_redirects=True, timeout=15) as client:
                         er = await client.get(embed, headers={**headers, "Referer": final_url})
                         er.raise_for_status()
                         etext = er.text
@@ -158,7 +179,7 @@ async def detect_streams(url: str, headers: dict | None = None) -> dict[str, Any
     for murl in m3u8_urls[:3]:
         try:
             step(f"fetching candidate {murl}")
-            async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            async with httpx_client(follow_redirects=True, timeout=15) as client:
                 mr = await client.get(murl, headers=headers)
                 mr.raise_for_status()
                 parsed = _parse_m3u8(mr.text, str(mr.url))
@@ -318,7 +339,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                     "User-Agent": USER_AGENT,
                     "Referer": effective_headers.get("Referer", "https://kisscloud.online/"),
                 }
-                with _httpx.Client(follow_redirects=True, timeout=15) as client:
+                with httpx_sync_client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
                     body = pr.text
                     import re as _re
@@ -370,7 +391,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                     "User-Agent": USER_AGENT,
                     "Referer": "https://kisscloud.online/",
                 }
-                with _httpx.Client(follow_redirects=True, timeout=30) as client:
+                with httpx_sync_client(follow_redirects=True, timeout=30) as client:
                     master = client.get(stream_url, headers=probe_headers).text
                     import re as _re
                     # Subtitle tracks
@@ -629,6 +650,7 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                 ],
+                proxy={"server": get_proxy()} if get_proxy() else None,
             )
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
