@@ -767,13 +767,30 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             # Check for iframes and try to interact
             frames = page.frames
             step(f"frames: {len(frames)}")
+            turnstile = 0
+            player_frames = 0
+            for frame in frames:
+                try:
+                    fu = frame.url or ""
+                    if "challenges.cloudflare.com" in fu or "turnstile" in fu:
+                        turnstile += 1
+                    elif fu and fu != url and "about:" not in fu:
+                        player_frames += 1
+                        step(f"frame: {fu[:100]}")
+                except Exception:
+                    pass
+            step(f"diag: turnstile_frames={turnstile} player_frames={player_frames} media_found={len(found)}")
+            if turnstile and not found:
+                step("diag: player looks blocked by Turnstile (challenge frames present, no media)")
+            elif not found and player_frames == 0:
+                step("diag: player may never have started (no embed frame, no media)")
+            elif not found:
+                step("diag: embed opened but no media request seen")
             kisscloud = None
             for frame in frames:
                 try:
-                    if frame.url and frame.url != url and "about:" not in frame.url:
-                        step(f"frame: {frame.url[:100]}")
-                        if any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed", "megaplay")):
-                            kisscloud = frame.url
+                    if frame.url and any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed", "megaplay")):
+                        kisscloud = frame.url
                 except Exception:
                     pass
             # If we found an embed iframe, open it directly and watch longer
@@ -937,6 +954,11 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
     for v in expanded[:12]:
         result["variants"].append(v)
     if not found:
-        result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
+        if any("blocked by Turnstile" in s for s in result.get("log", [])):
+            result["error"] = "Player blocked by Turnstile. Use Open in browser and pass the check."
+        elif any("never have started" in s for s in result.get("log", [])):
+            result["error"] = "Player never started. The play button may not have been found."
+        else:
+            result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
         step(result["error"])
     return result
