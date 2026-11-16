@@ -684,7 +684,7 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 try:
                     if frame.url and frame.url != url and "about:" not in frame.url:
                         step(f"frame: {frame.url[:100]}")
-                        if "kisscloud" in frame.url or "/video/" in frame.url:
+                        if any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed")):
                             kisscloud = frame.url
                 except Exception:
                     pass
