@@ -2139,6 +2139,14 @@
     });
   }
   const captureBtn = $("#stream-capture-btn");
+  const openBtn = $("#stream-open-btn");
+  if (openBtn) {
+    openBtn.addEventListener("click", () => {
+      const url = ($("#stream-url") && $("#stream-url").value.trim()) || "";
+      if (!url) return;
+      window.open(url, "_blank", "noopener");
+    });
+  }
   if (captureBtn) {
     captureBtn.addEventListener("click", async (ev) => {
       ev.preventDefault();
