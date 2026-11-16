@@ -893,13 +893,29 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
     for u in found[:5]:
         try:
             if ".m3u8" in u.lower():
-                probe = await detect_streams(u)
+                headers = {}
+                if "nexabloom" in u.lower() or "hianime" in u.lower() or "megaplay" in u.lower():
+                    headers["Referer"] = "https://hianime.ms/"
+                probe = await detect_streams(u, headers=headers)
                 kids = probe.get("variants") or []
-                if len(kids) > 1 or (kids and kids[0].get("resolution") not in ("original", "captured", "")):
-                    for k in kids:
+                step(f"probe {u[:60]} -> {len(kids)} variants type={probe.get('type')}")
+                real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
+                if real:
+                    for k in real:
                         k["name"] = "browser"
                         expanded.append(k)
-                        step(f"quality {k.get('resolution')} bw={k.get('bandwidth')} {k.get('url','')[:70]}")
+                        step(f"quality {k.get('resolution')} bw={k.get('bandwidth')}")
+                    continue
+                elif kids:
+                    # media playlist — label from URL if possible
+                    label = "media"
+                    if "1080" in u: label = "1080p"
+                    elif "720" in u: label = "720p"
+                    elif "480" in u: label = "480p"
+                    elif "360" in u: label = "360p"
+                    kids[0]["resolution"] = label
+                    kids[0]["name"] = "browser"
+                    expanded.append(kids[0])
                     continue
         except Exception as exc:
             step(f"quality probe failed: {exc}")
