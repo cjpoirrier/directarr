@@ -490,7 +490,13 @@ async def streams_download(
         raise HTTPException(400, "url is required")
     headers = body.get("headers") or {}
     job_id = streams_mod.enqueue_stream(title, url, headers=headers)
-    background_tasks.add_task(streams_mod.run_stream_download, job_id, title, url, headers)
+    background_tasks.add_task(
+        streams_mod.run_stream_download,
+        job_id,
+        title,
+        url,
+        headers=headers,
+    )
     return {"ok": True, "id": job_id, "status": "queued", "title": title}
 
 

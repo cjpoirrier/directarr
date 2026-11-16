@@ -2070,36 +2070,49 @@
         <table class="data">
           <thead><tr><th>Quality</th><th>Bandwidth</th><th>Codecs</th><th></th></tr></thead>
           <tbody>
-            ${variants.map((v) => `
-              <tr>
-                <td>${escapeHtml(v.resolution || "unknown")}</td>
-                <td>${v.bandwidth ? Math.round(v.bandwidth / 1000) + " kbps" : "—"}</td>
-                <td>${escapeHtml(v.codecs || "—")}</td>
-                <td><button class="btn sm primary" data-stream-url="${escapeHtml(v.url)}" data-stream-title="${escapeHtml(v.resolution || "stream")}">Download</button></td>
-              </tr>
-            `).join("")}
+            ${variants.map((v, index) => `
+  <tr>
+    <td>${escapeHtml(v.resolution || "unknown")}</td>
+    <td>${v.bandwidth ? Math.round(v.bandwidth / 1000) + " kbps" : "—"}</td>
+    <td>${escapeHtml(v.codecs || "—")}</td>
+    <td>
+      <button class="btn sm primary"
+        data-stream-index="${index}"
+        data-stream-title="${escapeHtml(v.resolution || "stream")}">
+        Download
+      </button>
+    </td>
+  </tr>
+`).join("")}
           </tbody>
         </table>`;
-      table.querySelectorAll("button[data-stream-url]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const sUrl = btn.getAttribute("data-stream-url");
-          const sTitle = btn.getAttribute("data-stream-title") || "Stream";
-          btn.disabled = true;
-          btn.textContent = "Queuing…";
-          try {
-            await api("/api/v1/streams/download", {
-              method: "POST",
-              body: { title: sTitle, url: sUrl },
-            });
-            btn.textContent = "Queued";
-            if (status) status.textContent = "Queued. Check Downloads.";
-          } catch (e) {
-            btn.disabled = false;
-            btn.textContent = "Download";
-            if (status) status.textContent = e.message || "Queue failed";
-          }
-        });
+      table.querySelectorAll("button[data-stream-index]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const variant = variants[Number(btn.dataset.streamIndex)];
+    if (!variant) return;
+
+    const sTitle = btn.dataset.streamTitle || "Stream";
+    btn.disabled = true;
+    btn.textContent = "Queuing…";
+
+    try {
+      await api("/api/v1/streams/download", {
+        method: "POST",
+        body: {
+          title: sTitle,
+          url: variant.url,
+          headers: variant.headers || {},
+        },
       });
+      btn.textContent = "Queued";
+      if (status) status.textContent = "Queued. Check Downloads.";
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Download";
+      if (status) status.textContent = e.message || "Queue failed";
+    }
+  });
+});
     } catch (e) {
       const msg = e.message || String(e);
       if (status) status.textContent = msg;
@@ -2169,29 +2182,37 @@
         if (status) status.textContent = variants.length ? variants.length + " captured" : (res.error || "Nothing captured");
         const table = $("#stream-variants");
         if (table && variants.length) {
-          table.innerHTML = variants.map(v =>
-            '<div class="row" style="margin:0.25rem 0"><code style="flex:1">' + escapeHtml(v.url) + '</code>' +
-            '<button class="btn sm primary" data-stream-url="' + escapeHtml(v.url) + '" data-stream-title="' + escapeHtml(pageTitle) + '">Download</button></div>'
-          ).join("");
-          table.querySelectorAll("button[data-stream-url]").forEach(btn => {
-            btn.addEventListener("click", async () => {
-              btn.disabled = true;
-              try {
-                await api("/api/v1/streams/download", {
-                  method: "POST",
-                  body: { title: btn.getAttribute("data-stream-title") || pageTitle, url: btn.getAttribute("data-stream-url") },
-                });
-                btn.textContent = "Queued";
-              } catch (e) { btn.disabled = false; }
-            });
-          });
-        }
+  table.innerHTML = variants.map((v, index) =>
+    '<div class="row" style="margin:0.25rem 0">' +
+      '<code style="flex:1">' + escapeHtml(v.url) + '</code>' +
+      '<button class="btn sm primary" data-stream-index="' + index + '"' +
+        ' data-stream-title="' + escapeHtml(pageTitle) + '">Download</button>' +
+    '</div>'
+  ).join("");
+
+  table.querySelectorAll("button[data-stream-index]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const variant = variants[Number(btn.dataset.streamIndex)];
+      if (!variant) return;
+
+      btn.disabled = true;
+      try {
+        await api("/api/v1/streams/download", {
+          method: "POST",
+          body: {
+            title: btn.getAttribute("data-stream-title") || pageTitle,
+            url: variant.url,
+            headers: variant.headers || {},
+          },
+        });
+        btn.textContent = "Queued";
       } catch (e) {
-        if (status) status.textContent = e.message || "Capture failed";
-        if (pre) pre.textContent = String(e.message || e);
+        btn.disabled = false;
+        if (status) status.textContent = e.message || "Queue failed";
       }
     });
-  }
+  });
+}
   // Expose for the inline onclick fallback
   window.directarrDetect = detectStreams;
 
