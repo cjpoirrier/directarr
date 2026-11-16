@@ -24,11 +24,19 @@ log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
 
 def get_proxy() -> str | None:
-    """Return proxy URL from env, or None.
-
-    Set DIRECTARR_PROXY=http://user:pass@host:port or socks5://host:port
-    """
-    return os.environ.get("DIRECTARR_PROXY") or None
+    """Return proxy URL from env or saved settings, or None."""
+    env = os.environ.get("DIRECTARR_PROXY")
+    if env:
+        return env
+    try:
+        from .config import CONFIG_DIR
+        p = CONFIG_DIR / "proxy.txt"
+        if p.is_file():
+            val = p.read_text().strip()
+            return val or None
+    except Exception:
+        pass
+    return None
 
 def httpx_client(**kwargs):
     """httpx client that uses DIRECTARR_PROXY when set."""
@@ -617,6 +625,8 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
         _log(msg)
 
     step(f"browser capture start: {url}")
+    proxy = get_proxy()
+    step(f"proxy: {proxy.split('@')[-1] if proxy else 'none'}")
     try:
         from playwright.async_api import async_playwright
     except ImportError:
