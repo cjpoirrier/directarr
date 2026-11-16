@@ -364,7 +364,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 import httpx as _httpx
                 probe_headers = {
                     "User-Agent": USER_AGENT,
-                    "Referer": effective_headers.get("Referer", "https://kisscloud.online/"),
+                    "Referer": effective_headers.get("Referer", ""),
                 }
                 with httpx_sync_client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
@@ -416,7 +416,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 from urllib.parse import urljoin
                 probe_headers = {
                     "User-Agent": USER_AGENT,
-                    "Referer": "https://kisscloud.online/",
+                    "Referer": effective_headers.get("Referer", ""),
                 }
                 with httpx_sync_client(follow_redirects=True, timeout=30) as client:
                     master = client.get(stream_url, headers=probe_headers).text
@@ -667,12 +667,6 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
             if u not in found:
                 found.append(u)
                 step(f"captured media {u}")
-        elif "neocdn" in u.lower() and u.endswith(".html"):
-            pass  # subtitle tracks, skip
-        elif "/video/" in u.lower() and "kisscloud" in u.lower():
-            if u not in found:
-                found.append(u)
-                step(f"captured embed {u}")
 
     try:
         async with async_playwright() as p:
@@ -758,29 +752,34 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 step("diag: player may never have started (no embed frame, no media)")
             elif not found:
                 step("diag: embed opened but no media request seen")
-            kisscloud = None
+            embed_url = None
             for frame in frames:
                 try:
-                    if frame.url and any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed", "megaplay")):
-                        kisscloud = frame.url
+                    fu = frame.url or ""
+                    if not fu or fu == url or "about:" in fu or "challenges.cloudflare.com" in fu:
+                        continue
+                    # Any cross-origin frame is a candidate player
+                    if urlparse(fu).netloc and urlparse(fu).netloc != urlparse(url).netloc:
+                        embed_url = fu
+                        step(f"embed frame: {fu[:100]}")
                 except Exception:
                     pass
-            # If we found an embed iframe, open it directly and watch longer
-            if kisscloud:
-                step(f"opening embed directly: {kisscloud[:80]}")
+            if embed_url:
+                step(f"opening embed directly: {embed_url[:80]}")
                 page2 = await context.new_page()
                 page2.on("request", on_request)
                 try:
-                    await page2.goto(kisscloud, wait_until="domcontentloaded", timeout=15000)
+                    await page2.goto(embed_url, wait_until="domcontentloaded", timeout=15000)
                     try:
                         await page2.wait_for_timeout(5000)
                     except Exception:
                         pass
-                    # Try the getVideo API directly if we can extract the id
-                    vid = kisscloud.rstrip("/").split("/")[-1]
-                    if vid and len(vid) > 8:
-                        api = f"https://kisscloud.online/player/index.php?data={vid}&do=getVideo"
-                        step(f"trying getVideo POST: {api}")
+                    # Kisscloud-style getVideo only when that host is the embed
+                    if "kisscloud" in embed_url.lower():
+                        vid = embed_url.rstrip("/").split("/")[-1]
+                        if vid and len(vid) > 8:
+                            api = f"https://kisscloud.online/player/index.php?data={vid}&do=getVideo"
+                            step(f"trying getVideo POST: {api}")
                         try:
                             resp = await page2.evaluate(f"""async () => {{
                                 const r = await fetch("{api}", {{
