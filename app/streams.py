@@ -736,8 +736,8 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
     """Load a page in a headless browser and capture m3u8/mp4 requests.
 
     Requires playwright and a Chromium install.
-    Tries FlareSolverr first when Cloudflare/Turnstile is likely, then injects
-    the returned cookies into the Playwright context.
+    Creates/uses a FlareSolverr session, injects cookies, then expands
+    any master playlists into quality variants (your quality check is kept).
     """
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
@@ -746,6 +746,15 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         _log(msg)
 
     step(f"browser capture start: {url}")
+
+    # Manage FlareSolverr session
+    own_session = flaresolverr_session is None
+    if own_session:
+        flaresolverr_session = await create_flaresolverr_session()
+        if flaresolverr_session:
+            step(f"created FlareSolverr session {flaresolverr_session}")
+        else:
+            step("could not create FlareSolverr session")
 
     # Try FlareSolverr first to get past Turnstile / Cloudflare
     fs_cookies: list = []
@@ -979,8 +988,29 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 cleaned.append(u)
     if cleaned:
         found = cleaned
-    for u in found[:10]:
-        result["variants"].append({
+    # Expand master playlists into quality variants
+    expanded = []
+    for u in found[:5]:
+        try:
+            if ".m3u8" in u.lower():
+                headers = {"User-Agent": USER_AGENT, "Referer": url}
+                probe = await detect_streams(
+                    u,
+                    headers=headers,
+                    flaresolverr_session=flaresolverr_session,
+                )
+                kids = probe.get("variants") or []
+                step(f"probe {u[:50]} -> {len(kids)} variants")
+                real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
+                if real:
+                    for k in real:
+                        k["name"] = "browser"
+                        expanded.append(k)
+                        step(f"quality {k.get('resolution')} bw={k.get('bandwidth')}")
+                    continue
+        except Exception as exc:
+            step(f"quality probe failed: {exc}")
+        expanded.append({
             "url": u,
             "resolution": "captured",
             "bandwidth": 0,
@@ -988,7 +1018,16 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             "name": "browser",
             "average_bandwidth": 0,
         })
+    for v in expanded[:12]:
+        v.setdefault("headers", {"Referer": url})
+        result["variants"].append(v)
     if not found:
         result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
         step(result["error"])
+
+    # Clean up FlareSolverr session if we created it
+    if own_session and flaresolverr_session:
+        await destroy_flaresolverr_session(flaresolverr_session)
+        step("destroyed FlareSolverr session")
+
     return result
