@@ -732,18 +732,31 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         raise
 
 
-async def capture_with_browser(url: str, timeout: int = 15) -> dict:
+async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None) -> dict:
     """Load a page in a headless browser and capture m3u8/mp4 requests.
 
     Requires playwright and a Chromium install.
+    Tries FlareSolverr first when Cloudflare/Turnstile is likely, then injects
+    the returned cookies into the Playwright context.
     """
-    result = {"input": url, "type": "browser", "variants": [], "error": None, "log": []}
+    result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
     def step(msg: str) -> None:
         result["log"].append(msg)
         _log(msg)
 
     step(f"browser capture start: {url}")
+
+    # Try FlareSolverr first to get past Turnstile / Cloudflare
+    fs_cookies: list = []
+    try:
+        step("trying FlareSolverr before browser")
+        _, _, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
+        result["cookies"] = fs_cookies
+        step(f"FlareSolverr returned {len(fs_cookies)} cookies")
+    except Exception as exc:
+        step(f"FlareSolverr pre-check failed (continuing without): {exc}")
+
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -783,6 +796,21 @@ async def capture_with_browser(url: str, timeout: int = 15) -> dict:
                 viewport={"width": 1280, "height": 720},
                 locale="en-US",
             )
+            # Inject FlareSolverr cookies into the Playwright context
+            if fs_cookies:
+                pw_cookies = []
+                for c in fs_cookies:
+                    if not c.get("name"):
+                        continue
+                    pw_cookies.append({
+                        "name": c["name"],
+                        "value": c.get("value", ""),
+                        "domain": c.get("domain") or urlparse(url).hostname,
+                        "path": c.get("path", "/"),
+                    })
+                if pw_cookies:
+                    await context.add_cookies(pw_cookies)
+                    step(f"injected {len(pw_cookies)} cookies into browser")
             # Apply stealth if available (supports 1.x and 2.x)
             stealth_ok = False
             try:
