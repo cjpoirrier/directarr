@@ -767,6 +767,28 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         tab = await browser.get(url)
         step(f"page title: {(await tab.evaluate('document.title'))[:80]}")
 
+        # Free Turnstile attempt (nodriver style)
+        await tab.sleep(3)
+        try:
+            # Look for Turnstile iframe and try to interact
+            turnstile = await tab.select("iframe[src*='challenges.cloudflare.com']", timeout=5)
+            if turnstile:
+                step("Turnstile iframe found, attempting click")
+                await turnstile.click()
+                await tab.sleep(8)
+                # Check for token
+                token = await tab.evaluate("""
+                    () => document.querySelector('[name="cf-turnstile-response"]')?.value || ''
+                """)
+                if token:
+                    step(f"Turnstile token obtained ({len(token)} chars)")
+                else:
+                    step("no Turnstile token after click")
+            else:
+                step("no Turnstile iframe found")
+        except Exception as exc:
+            step(f"Turnstile attempt failed: {exc}")
+
         # Wait a bit for dynamic content
         await tab.sleep(5)
 
