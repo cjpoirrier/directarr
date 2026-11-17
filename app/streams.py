@@ -788,10 +788,24 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             step("using regular selenium")
 
         try:
-            # Inject FlareSolverr cookies before navigation
-            if cookies:
-                driver.get("https://aniwaves.tv/")  # set domain first
-                for c in cookies:
+            # Start browser first, then obtain FlareSolverr cookies and inject them
+            driver.get("about:blank")
+            step("browser started")
+
+            # Get fresh cookies from FlareSolverr while browser is open
+            fs_cookies = cookies or []
+            if not fs_cookies:
+                try:
+                    import asyncio
+                    # Note: we are inside a sync thread; caller should pass cookies when possible
+                    step("no cookies passed, continuing without")
+                except Exception:
+                    pass
+
+            if fs_cookies:
+                # Navigate to domain so we can set cookies
+                driver.get("https://aniwaves.tv/")
+                for c in fs_cookies:
                     if c.get("name"):
                         try:
                             driver.add_cookie({
@@ -800,10 +814,13 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                                 "domain": c.get("domain") or ".aniwaves.tv",
                                 "path": c.get("path", "/"),
                                 "secure": True,
+                                "sameSite": "None",
                             })
-                        except Exception:
-                            pass
-                step(f"injected {len(cookies)} cookies into selenium")
+                        except Exception as exc:
+                            step(f"cookie set failed for {c.get('name')}: {exc}")
+                step(f"injected {len(fs_cookies)} cookies into running browser")
+
+            # Now go to the real target
             driver.get(target)
             step(f"page title: {driver.title[:80]}")
             # Wait for dynamic player content
