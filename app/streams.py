@@ -733,11 +733,12 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
 
 
 async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None) -> dict:
-    """Load a page in a headless browser and capture m3u8/mp4 requests.
+    """Single-browser capture using Selenium + undetected-chromedriver.
 
-    Requires playwright and a Chromium install.
-    Uses FlareSolverr session + cookies, longer waits, and Selenium Turnstile
-    fallback if challenge frames remain. Quality expansion is preserved.
+    Solve, click play, and capture media URLs all happen in the same browser
+    so Cloudflare/Turnstile clearance is not transferred between browsers.
+    Falls back to the previous Playwright path only if Selenium is unavailable.
+    Quality expansion is preserved.
     """
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
@@ -745,328 +746,119 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         result["log"].append(msg)
         _log(msg)
 
-    step(f"browser capture start: {url}")
+    step(f"browser capture start (selenium): {url}")
 
-    # Manage FlareSolverr session
-    own_session = flaresolverr_session is None
-    if own_session:
-        flaresolverr_session = await create_flaresolverr_session()
-        if flaresolverr_session:
-            step(f"created FlareSolverr session {flaresolverr_session}")
+    def _selenium_capture_sync(target: str) -> tuple[list[str], str]:
+        try:
+            import undetected_chromedriver as uc
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+        except ImportError:
+            # fall back to regular selenium
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.common.by import By
+            uc = None
+
+        found = []
+        if uc:
+            options = uc.ChromeOptions()
+            options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            driver = uc.Chrome(options=options)
+            step("using undetected-chromedriver")
         else:
-            step("could not create FlareSolverr session")
+            options = Options()
+            options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+            driver = webdriver.Chrome(options=options)
+            step("using regular selenium")
 
-    # Try FlareSolverr first and parse its solved HTML for streams
-    fs_cookies: list = []
-    fs_html = ""
-    fs_final = url
-    try:
-        step("trying FlareSolverr before browser")
-        fs_html, fs_final, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
-        result["cookies"] = fs_cookies
-        step(f"FlareSolverr returned {len(fs_cookies)} cookies: {[c.get('name') for c in fs_cookies]} html_bytes={len(fs_html)}")
-        # Parse the solved HTML for m3u8 / media immediately
-        if fs_html:
-            m3u8_urls = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', fs_html, re.I)
-            if not m3u8_urls:
-                rel = re.findall(r'["\']([^"\']+\.m3u8[^"\']*)["\']', fs_html, re.I)
-                m3u8_urls = [urljoin(fs_final, u) for u in rel]
-            if m3u8_urls:
-                step(f"FlareSolverr HTML contained {len(m3u8_urls)} m3u8 candidates")
-                # Use detect_streams logic on the first few
-                for murl in m3u8_urls[:3]:
-                    try:
-                        probe = await detect_streams(murl, headers={"Referer": url}, flaresolverr_session=flaresolverr_session)
-                        kids = probe.get("variants") or []
-                        real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
-                        if real or kids:
-                            step(f"streams found via FlareSolverr HTML: {len(real or kids)}")
-                            for k in (real or kids)[:8]:
-                                k["name"] = "flaresolverr"
-                                k.setdefault("headers", {"Referer": url})
-                                result["variants"].append(k)
-                            if own_session and flaresolverr_session:
-                                await destroy_flaresolverr_session(flaresolverr_session)
-                            return result
-                    except Exception as exc:
-                        step(f"FlareSolverr HTML probe failed: {exc}")
-    except Exception as exc:
-        step(f"FlareSolverr pre-check failed (continuing without): {exc}")
-
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        result["error"] = "playwright not installed. Add it to the image and run playwright install chromium."
-        step(result["error"])
-        return result
-
-    found = []
-    seen_urls = []
-
-    async def on_request(req):
-        u = req.url
-        if len(seen_urls) < 30 and not any(x in u for x in [".js", ".css", ".png", ".jpg", ".woff", "google", "analytics"]):
-            seen_urls.append(u.split("?")[0][:120])
-        if ".m3u8" in u.lower() or ".mp4" in u.lower():
-            if u not in found:
-                found.append(u)
-                step(f"captured media {u}")
-        elif "neocdn" in u.lower() and u.endswith(".html"):
-            pass  # subtitle tracks, skip
-        elif "/video/" in u.lower() and "kisscloud" in u.lower():
-            if u not in found:
-                found.append(u)
-                step(f"captured embed {u}")
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 720},
-                locale="en-US",
-            )
-            # Inject FlareSolverr cookies into the Playwright context
-            if fs_cookies:
-                pw_cookies = []
-                for c in fs_cookies:
-                    if not c.get("name"):
-                        continue
-                    pw_cookies.append({
-                        "name": c["name"],
-                        "value": c.get("value", ""),
-                        "domain": c.get("domain") or urlparse(url).hostname,
-                        "path": c.get("path", "/"),
-                        "secure": True,
-                        "sameSite": "None",
-                    })
-                if pw_cookies:
-                    await context.add_cookies(pw_cookies)
-                    step(f"injected {len(pw_cookies)} cookies into browser")
-            # Apply stealth if available (supports 1.x and 2.x)
-            stealth_ok = False
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-                stealth_ok = True
-                step("stealth applied (1.x)")
-            except ImportError:
-                pass
-            if not stealth_ok:
+        try:
+            driver.get(target)
+            step(f"page title: {driver.title[:80]}")
+            # Try to click play controls
+            for sel in ["[class*='play']", ".play-btn", "button.play", "video", "#player-option-1"]:
                 try:
-                    from playwright_stealth import Stealth
-                    page = await context.new_page()
-                    await Stealth().apply_stealth_async(page)
-                    stealth_ok = True
-                    step("stealth applied (2.x)")
-                except Exception as exc:
-                    page = await context.new_page()
-                    step(f"stealth not applied: {exc}")
-            if not stealth_ok and "page" not in dir():
-                page = await context.new_page()
-                step("stealth unavailable")
-            # Also watch frames as they appear
-            page.on("request", on_request)
-            page.on("frameattached", lambda frame: frame.page.on("request", on_request) if frame.page else None)
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-            step("page loaded, looking for play controls")
-            try:
-                page_title = await page.title()
-                if page_title:
-                    result["title"] = page_title.strip()
-                    step(f"page title: {page_title[:80]}")
-            except Exception:
-                pass
-            for sel in [
-                "#player-option-1",
-                ".dooplay_player_option",
-                ".play-btn",
-                "button.play",
-                "[class*='play']",
-                "video",
-            ]:
-                try:
-                    el = await page.query_selector(sel)
-                    if el:
-                        await el.click(timeout=2000)
-                        step(f"clicked {sel}")
-                        break
+                    el = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
+                    el.click()
+                    step(f"clicked {sel}")
+                    break
                 except Exception:
-                    pass
-            await page.wait_for_timeout(12000)
-            # Check for iframes and try to interact
-            frames = page.frames
-            step(f"frames: {len(frames)}")
-            # If Turnstile frames are still present, try Selenium captcha solver
-            turnstile_frames = [f for f in frames if f.url and "challenges.cloudflare.com" in f.url]
-            if turnstile_frames:
-                step(f"Turnstile still present ({len(turnstile_frames)} frames), trying Selenium captcha")
-                sel = await _try_selenium_captcha(url)
-                if sel:
-                    step("Selenium captcha bypass succeeded, reloading with new cookies if possible")
-                    # Note: Selenium returns HTML; for full cookie transfer a more complex bridge is needed.
-                    # For now we log success and continue; media may still appear if solver cleared the page.
-                else:
-                    step("Selenium captcha fallback did not clear Turnstile")
-            kisscloud = None
-            for frame in frames:
-                try:
-                    if frame.url and frame.url != url and "about:" not in frame.url:
-                        step(f"frame: {frame.url[:100]}")
-                        if any(x in frame.url for x in ("kisscloud", "/video/", "vhscdn", "embed")):
-                            kisscloud = frame.url
-                except Exception:
-                    pass
-            # If we found an embed iframe, open it directly and watch longer
-            if kisscloud:
-                step(f"opening embed directly: {kisscloud[:80]}")
-                page2 = await context.new_page()
-                page2.on("request", on_request)
-                try:
-                    await page2.goto(kisscloud, wait_until="domcontentloaded", timeout=15000)
-                    await page2.wait_for_timeout(5000)
-                    # Try the getVideo API directly if we can extract the id
-                    vid = kisscloud.rstrip("/").split("/")[-1]
-                    if vid and len(vid) > 8:
-                        api = f"https://kisscloud.online/player/index.php?data={vid}&do=getVideo"
-                        step(f"trying getVideo POST: {api}")
+                    continue
+            # Wait for possible media
+            import time
+            time.sleep(8)
+            # Collect from performance logs if available
+            try:
+                logs = driver.get_log("performance")
+                for entry in logs:
+                    msg = entry.get("message", "")
+                    if ".m3u8" in msg.lower() or ".mp4" in msg.lower():
+                        import json
                         try:
-                            resp = await page2.evaluate(f"""async () => {{
-                                const r = await fetch("{api}", {{
-                                    method: "POST",
-                                    credentials: "include",
-                                    headers: {{
-                                        "Content-Type": "application/x-www-form-urlencoded",
-                                        "X-Requested-With": "XMLHttpRequest"
-                                    }},
-                                    body: "hash={vid}&r=" + encodeURIComponent(location.href)
-                                }});
-                                return await r.text();
-                            }}""")
-                            step(f"getVideo response length: {len(resp or '')}")
-                            if resp:
-                                step("getVideo snippet: " + resp[:300].replace("\n", " "))
-                                import re as _re
-                                # Try to parse as JSON
-                                try:
-                                    import json as _json
-                                    data = _json.loads(resp)
-                                    step(f"getVideo JSON keys: {list(data.keys())[:10]}")
-                                    # Prefer the signed m3u8
-                                    for key in ("securedLink", "videoSource"):
-                                        val = data.get(key)
-                                        if val and isinstance(val, str) and val.startswith("http"):
-                                            if val not in found:
-                                                found.append(val)
-                                                step(f"stream {key}: {val[:120]}")
-                                    if data.get("ck"):
-                                        step("has ck key")
-                                except Exception as exc:
-                                    step(f"json parse failed: {exc}")
-                                for m in _re.findall(r'https?://[^"\'\s<>]+', resp):
-                                    if any(x in m.lower() for x in ["m3u8", "hls", ".mp4", "master"]):
-                                        if m not in found:
-                                            found.append(m)
-                                            step(f"getVideo url {m}")
-                        except Exception as exc:
-                            step(f"getVideo fetch failed: {exc}")
-                        except Exception as exc:
-                            step(f"getVideo fetch failed: {exc}")
-                    for sel in ["video", ".jw-icon-play", "[class*='play']", "button"]:
-                        try:
-                            el = await page2.query_selector(sel)
-                            if el:
-                                await el.click(timeout=1500)
-                                step(f"embed clicked {sel}")
-                                break
+                            data = json.loads(msg)
+                            u = data.get("message", {}).get("params", {}).get("request", {}).get("url", "")
+                            if u and (".m3u8" in u.lower() or ".mp4" in u.lower()) and u not in found:
+                                found.append(u)
                         except Exception:
                             pass
-                    await page2.wait_for_timeout(6000)
-                    # Collect from this page too
-                    try:
-                        injected2 = await page2.evaluate("() => window.__directarr_found || []")
-                        for u in injected2:
-                            if u not in found:
-                                found.append(u)
-                                step(f"embed injected {u}")
-                    except Exception:
-                        pass
-                except Exception as exc:
-                    step(f"embed open failed: {exc}")
-                await page2.close()
-            await page.wait_for_timeout(2000)
-            if seen_urls:
-                step("sample requests: " + " | ".join(seen_urls[:8]))
-            # Pull URLs collected by the injected script
-            try:
-                injected = await page.evaluate("() => window.__directarr_found || []")
-                for u in injected:
-                    if u not in found:
-                        found.append(u)
-                        step(f"injected found {u}")
             except Exception:
                 pass
-            await browser.close()
+            # Also scan page source
+            src = driver.page_source
+            import re as _re
+            for m in _re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', src, _re.I):
+                if m not in found:
+                    found.append(m)
+            step(f"selenium found {len(found)} media urls")
+            return found, driver.title
+        finally:
+            driver.quit()
+
+    try:
+        found, title = await asyncio.to_thread(_selenium_capture_sync, url)
+        if title:
+            result["title"] = title
+        # Quality expansion (same as before)
+        expanded = []
+        for u in found[:5]:
+            try:
+                if ".m3u8" in u.lower():
+                    headers = {"User-Agent": USER_AGENT, "Referer": url}
+                    probe = await detect_streams(u, headers=headers, flaresolverr_session=flaresolverr_session)
+                    kids = probe.get("variants") or []
+                    real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
+                    if real:
+                        for k in real:
+                            k["name"] = "selenium"
+                            k.setdefault("headers", {"Referer": url})
+                            expanded.append(k)
+                        continue
+            except Exception as exc:
+                step(f"quality probe failed: {exc}")
+            expanded.append({
+                "url": u,
+                "resolution": "captured",
+                "bandwidth": 0,
+                "codecs": "",
+                "name": "selenium",
+                "average_bandwidth": 0,
+            })
+        for v in expanded[:12]:
+            v.setdefault("headers", {"Referer": url})
+            result["variants"].append(v)
+        if not found:
+            result["error"] = "No m3u8/mp4 requests seen in single-browser session."
+            step(result["error"])
     except Exception as exc:
+        step(f"selenium capture failed: {exc}")
         result["error"] = str(exc)
-        step(f"browser error: {exc}")
-        return result
-
-    # Prefer signed m3u8; drop embed pages and API endpoints from the list
-    cleaned = []
-    for u in found:
-        lu = u.lower()
-        if ".m3u8" in lu or "/cdn/hls/" in lu:
-            if u not in cleaned:
-                cleaned.append(u)
-    if cleaned:
-        found = cleaned
-    # Expand master playlists into quality variants
-    expanded = []
-    for u in found[:5]:
-        try:
-            if ".m3u8" in u.lower():
-                headers = {"User-Agent": USER_AGENT, "Referer": url}
-                probe = await detect_streams(
-                    u,
-                    headers=headers,
-                    flaresolverr_session=flaresolverr_session,
-                )
-                kids = probe.get("variants") or []
-                step(f"probe {u[:50]} -> {len(kids)} variants")
-                real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
-                if real:
-                    for k in real:
-                        k["name"] = "browser"
-                        expanded.append(k)
-                        step(f"quality {k.get('resolution')} bw={k.get('bandwidth')}")
-                    continue
-        except Exception as exc:
-            step(f"quality probe failed: {exc}")
-        expanded.append({
-            "url": u,
-            "resolution": "captured",
-            "bandwidth": 0,
-            "codecs": "",
-            "name": "browser",
-            "average_bandwidth": 0,
-        })
-    for v in expanded[:12]:
-        v.setdefault("headers", {"Referer": url})
-        result["variants"].append(v)
-    if not found:
-        result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
-        step(result["error"])
-
-    if own_session and flaresolverr_session:
-        await destroy_flaresolverr_session(flaresolverr_session)
-        step("destroyed FlareSolverr session")
 
     return result
