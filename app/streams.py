@@ -825,44 +825,56 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             except Exception as exc:
                 step(f"ajax direct failed: {exc}")
 
-        # Follow the embed to get the real source
+        # Follow the embed and install the same hooks the userscript uses
         if embed_url:
             try:
                 step(f"opening embed: {embed_url[:80]}")
-                # Clear found so we only see new requests from the embed
-                pre_len = len(found)
                 await tab.get(embed_url)
-                await tab.sleep(8)
-                # Check what new network requests appeared
-                new_reqs = found[pre_len:]
-                step(f"new requests after embed: {len(new_reqs)}")
-                for nr in new_reqs[:5]:
-                    step(f"  embed-net: {nr[:130]}")
+                await tab.sleep(2)
 
-                html = await tab.evaluate("document.documentElement.outerHTML") or ""
-                step(f"embed html length: {len(html)}")
-                import re as _re
-                for m in _re.findall(r"https?://[^\s\"']*(?:getSources|m3u8|file)[^\s\"']*", html, _re.I):
-                    if m not in found:
-                        found.append(m)
-                        step(f"from embed html: {m[:120]}")
-
-                # Look for source patterns in scripts
-                sources_js = await tab.evaluate("""
+                # Install capture hooks (same idea as the Tampermonkey script)
+                await tab.evaluate("""
                     () => {
-                        const out = [];
-                        document.querySelectorAll('script').forEach(s => {
-                            const t = s.textContent || '';
-                            if (t.includes('sources') || t.includes('file:') || t.includes('m3u8') || t.includes('getSources')) {
-                                out.push(t.slice(0, 800));
+                        window.__media = window.__media || [];
+                        function check(url) {
+                            if (!url) return;
+                            const u = String(url).toLowerCase();
+                            if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/cdn/hls/') ||
+                                u.includes('master.txt') || u.includes('do=getvideo') || u.includes('getsources')) {
+                                if (!window.__media.includes(url)) {
+                                    window.__media.push(String(url));
+                                }
                             }
-                        });
-                        return out.slice(0, 2);
+                        }
+                        const origFetch = window.fetch;
+                        window.fetch = function(input, init) {
+                            try { check(typeof input === 'string' ? input : input && input.url); } catch(e) {}
+                            return origFetch.apply(this, arguments);
+                        };
+                        const origOpen = XMLHttpRequest.prototype.open;
+                        XMLHttpRequest.prototype.open = function(method, url) {
+                            try { check(url); } catch(e) {}
+                            return origOpen.apply(this, arguments);
+                        };
+                        try {
+                            const po = new PerformanceObserver((list) => {
+                                for (const entry of list.getEntries()) {
+                                    if (entry.name) check(entry.name);
+                                }
+                            });
+                            po.observe({ type: 'resource', buffered: true });
+                        } catch(e) {}
                     }
                 """)
-                if sources_js:
-                    for sj in sources_js:
-                        step(f"embed script: {sj[:180]}")
+                step("capture hooks installed on embed")
+                await tab.sleep(10)
+
+                media = await tab.evaluate("() => window.__media || []")
+                step(f"captured media urls: {len(media or [])}")
+                for m in (media or [])[:8]:
+                    step(f"  media: {m[:140]}")
+                    if m not in found:
+                        found.append(m)
             except Exception as exc:
                 step(f"embed follow failed: {exc}")
 
