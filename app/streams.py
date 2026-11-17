@@ -819,7 +819,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         def on_request(event):
             try:
                 u = event.request.url
-                if u and any(x in u.lower() for x in (".m3u8", ".mp4", ".ts", ".mkv", ".m4s", ".webm", ".m3u")):
+                if u and any(x in u.lower() for x in ("m3u8", ".mp4", ".ts", ".mkv", ".m4s", ".webm", "getSources", "/ajax/sources")):
                     if u not in found:
                         found.append(u)
                         step(f"network media: {u[:100]}")
