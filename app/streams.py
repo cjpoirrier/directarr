@@ -766,6 +766,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         step("nodriver browser started")
         # Enable network monitoring BEFORE navigation
         found = []
+        ajax_bodies = {}
         def on_request(event):
             try:
                 u = getattr(event, "request", None)
@@ -776,11 +777,26 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         step(f"network: {u[:140]}")
             except Exception:
                 pass
+        async def on_response(event):
+            try:
+                resp = getattr(event, "response", None)
+                u = resp.url if resp else ""
+                if u and "/ajax/sources" in u:
+                    try:
+                        body = await tab.send(uc.cdp.network.get_response_body(request_id=event.request_id))
+                        text = body[0] if isinstance(body, (list, tuple)) else str(body)
+                        ajax_bodies[u] = text
+                        step(f"ajax body captured ({len(text)} chars)")
+                    except Exception as exc:
+                        step(f"get_response_body failed: {exc}")
+            except Exception:
+                pass
         # We'll attach the handler after we have a tab
         tab = await browser.get("about:blank")
         try:
             await tab.send(uc.cdp.network.enable())
             tab.add_handler(uc.cdp.network.RequestWillBeSent, on_request)
+            tab.add_handler(uc.cdp.network.ResponseReceived, on_response)
             step("network monitoring enabled (pre-nav)")
         except Exception as exc:
             step(f"network enable failed: {exc}")
@@ -859,34 +875,15 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         step(f"nodriver found {len(found)} media urls")
 
         # Parse /ajax/sources responses for the real embed/source
-        ajax_urls = [u for u in found if "/ajax/sources" in u]
+        ajax_urls = list(ajax_bodies.keys()) or [u for u in found if "/ajax/sources" in u]
         for ajax in ajax_urls[:1]:
             try:
-                step(f"fetching ajax sources: {ajax[:80]}")
-                resp = await tab.evaluate(f"""
-                    async () => {{
-                        const r = await fetch({ajax!r}, {{
-                            credentials: 'include',
-                            headers: {{
-                                'X-Requested-With': 'XMLHttpRequest',
-                                'Accept': 'application/json, text/plain, */*',
-                                'Referer': location.href
-                            }}
-                        }});
-                        const text = await r.text();
-                        return JSON.stringify({{status: r.status, len: text.length, body: text.slice(0, 500)}});
-                    }}
-                """)
-                step(f"ajax raw: {resp}")
-                # try to parse the wrapped response
-                try:
-                    import json as _json
-                    wrapped = _json.loads(resp or "{{}}")
-                    body = wrapped.get("body") or ""
-                    step(f"ajax status={wrapped.get('status')} body_len={len(body)}")
-                    resp = body
-                except Exception:
-                    pass
+                resp = ajax_bodies.get(ajax) or ""
+                if resp:
+                    step(f"using captured ajax body ({len(resp)} chars)")
+                else:
+                    step("no captured body, skipping evaluate")
+                    continue
                 if resp and ("embed" in resp or "link" in resp or "m3u8" in resp):
                     import json as _json
                     try:
