@@ -785,19 +785,39 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         if not clicked:
             step("no play control clicked")
 
-        # Extra wait for media
-        await tab.sleep(12)
-
-        # Collect media URLs from page
+        # Enable network monitoring and wait longer
         found = []
+        try:
+            await tab.send(uc.cdp.network.enable())
+            step("network monitoring enabled")
+        except Exception as exc:
+            step(f"network enable failed: {exc}")
+
+        # Listen for requests
+        def on_request(event):
+            try:
+                u = event.request.url
+                if u and (".m3u8" in u.lower() or ".mp4" in u.lower()):
+                    if u not in found:
+                        found.append(u)
+                        step(f"network media: {u[:100]}")
+            except Exception:
+                pass
+
+        tab.add_handler(uc.cdp.network.RequestWillBeSent, on_request)
+
+        step("waiting 20s for media requests")
+        await tab.sleep(20)
+
+        # Also scan page content as fallback
         try:
             html = await tab.get_content()
             import re as _re
             for m in _re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', html or "", _re.I):
                 if m not in found:
                     found.append(m)
-        except Exception as exc:
-            step(f"content scan failed: {exc}")
+        except Exception:
+            pass
 
         step(f"nodriver found {len(found)} media urls")
 
