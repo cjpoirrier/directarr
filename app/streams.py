@@ -23,7 +23,7 @@ log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
 
 # FlareSolverr (configurable via env for Docker) + optional Selenium fallback
-FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://10.0.0.93:8191/v1")
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 
 def _looks_like_cloudflare(text: str, status: int) -> bool:
     if status in (403, 503):
