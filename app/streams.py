@@ -799,20 +799,66 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         await tab.sleep(8)
 
         ajax_urls = [u for u in found if "/ajax/sources" in u]
+        embed_url = None
         if ajax_urls:
             try:
                 step("opening ajax/sources directly")
                 await tab.get(ajax_urls[0])
                 await tab.sleep(2)
                 body = await tab.evaluate("document.body.innerText") or ""
-                step(f"ajax text: {body[:250]}")
-                import re as _re
-                for m in _re.findall(r"https?://[^\s\"']+", body):
-                    if m not in found:
-                        found.append(m)
-                        step(f"from ajax: {m[:120]}")
+                step(f"ajax text: {body[:300]}")
+                import json as _json
+                try:
+                    data = _json.loads(body)
+                    embed_url = (data.get("result") or {}).get("url") or data.get("url")
+                    if embed_url:
+                        step(f"embed from ajax: {embed_url[:100]}")
+                        found.append(embed_url)
+                except Exception:
+                    import re as _re
+                    for m in _re.findall(r"https?://[^\s\"']+", body):
+                        if "vhscdn" in m or "embed" in m:
+                            embed_url = m
+                            found.append(m)
+                            step(f"embed regex: {m[:100]}")
+                            break
             except Exception as exc:
                 step(f"ajax direct failed: {exc}")
+
+        # Follow the embed to get the real source
+        if embed_url:
+            try:
+                step(f"opening embed: {embed_url[:80]}")
+                await tab.get(embed_url)
+                await tab.sleep(5)
+                # Look for getSources in network or page
+                html = await tab.evaluate("document.documentElement.outerHTML") or ""
+                import re as _re
+                for m in _re.findall(r"https?://[^\s\"']*getSources[^\s\"']*", html):
+                    if m not in found:
+                        found.append(m)
+                        step(f"getSources found: {m[:120]}")
+                for m in _re.findall(r"https?://[^\s\"']*m3u8[^\s\"']*", html, _re.I):
+                    if m not in found:
+                        found.append(m)
+                        step(f"m3u8 in embed: {m[:120]}")
+                # Also check for sources in JS
+                sources_js = await tab.evaluate("""
+                    () => {
+                        const scripts = document.querySelectorAll('script');
+                        for (const s of scripts) {
+                            const t = s.textContent || '';
+                            if (t.includes('sources') || t.includes('file') || t.includes('m3u8')) {
+                                return t.slice(0, 1500);
+                            }
+                        }
+                        return '';
+                    }
+                """)
+                if sources_js:
+                    step(f"embed script snippet: {sources_js[:200]}")
+            except Exception as exc:
+                step(f"embed follow failed: {exc}")
 
         step(f"total candidates: {len(found)}")
 
