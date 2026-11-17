@@ -865,11 +865,28 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 step(f"fetching ajax sources: {ajax[:80]}")
                 resp = await tab.evaluate(f"""
                     async () => {{
-                        const r = await fetch({ajax!r}, {{credentials: 'include'}});
-                        return await r.text();
+                        const r = await fetch({ajax!r}, {{
+                            credentials: 'include',
+                            headers: {{
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Accept': 'application/json, text/plain, */*',
+                                'Referer': location.href
+                            }}
+                        }});
+                        const text = await r.text();
+                        return JSON.stringify({{status: r.status, len: text.length, body: text.slice(0, 500)}});
                     }}
                 """)
-                step(f"ajax response length: {len(resp or '')}")
+                step(f"ajax raw: {resp}")
+                # try to parse the wrapped response
+                try:
+                    import json as _json
+                    wrapped = _json.loads(resp or "{{}}")
+                    body = wrapped.get("body") or ""
+                    step(f"ajax status={wrapped.get('status')} body_len={len(body)}")
+                    resp = body
+                except Exception:
+                    pass
                 if resp and ("embed" in resp or "link" in resp or "m3u8" in resp):
                     import json as _json
                     try:
