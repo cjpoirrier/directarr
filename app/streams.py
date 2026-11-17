@@ -764,7 +764,27 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             ],
         )
         step("nodriver browser started")
-        tab = await browser.get(url)
+        # Enable network monitoring BEFORE navigation
+        found = []
+        def on_request(event):
+            try:
+                u = getattr(event, "request", None)
+                u = u.url if u else ""
+                if u and any(x in u.lower() for x in ("m3u8", ".mp4", ".ts", ".mkv", "getSources", "/ajax/sources", "vhscdn", "winghoster", "roburnt")):
+                    if u not in found:
+                        found.append(u)
+                        step(f"network: {u[:140]}")
+            except Exception:
+                pass
+        # We'll attach the handler after we have a tab
+        tab = await browser.get("about:blank")
+        try:
+            await tab.send(uc.cdp.network.enable())
+            tab.add_handler(uc.cdp.network.RequestWillBeSent, on_request)
+            step("network monitoring enabled (pre-nav)")
+        except Exception as exc:
+            step(f"network enable failed: {exc}")
+        await tab.get(url)
         step(f"page title: {(await tab.evaluate('document.title'))[:80]}")
 
         # Free Turnstile attempt (nodriver style)
@@ -807,26 +827,21 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         if not clicked:
             step("no play control clicked")
 
-        # Enable network monitoring and wait longer
-        found = []
-        try:
-            await tab.send(uc.cdp.network.enable())
-            step("network monitoring enabled")
-        except Exception as exc:
-            step(f"network enable failed: {exc}")
-
-        # Listen for requests
-        def on_request(event):
+        # Click server tabs (DatSaV, Vidplay, etc.)
+        server_names = ["DatSaV", "Vidplay", "BYFMS", "DGHG", "MyCloud", "S-Sub"]
+        for name in server_names:
             try:
-                u = event.request.url
-                if u and any(x in u.lower() for x in ("m3u8", ".mp4", ".ts", ".mkv", ".m4s", ".webm", "getSources", "/ajax/sources")):
-                    if u not in found:
-                        found.append(u)
-                        step(f"network media: {u[:100]}")
+                # Try text match
+                el = await tab.find(name, best_match=True, timeout=2)
+                if el:
+                    await el.click()
+                    step(f"clicked server: {name}")
+                    await tab.sleep(3)
+                    break
             except Exception:
-                pass
-
-        tab.add_handler(uc.cdp.network.RequestWillBeSent, on_request)
+                continue
+        else:
+            step("no server button clicked")
 
         step("waiting 20s for media requests")
         await tab.sleep(20)
