@@ -6,7 +6,9 @@ user pick a quality, and downloads via FFmpeg into the existing queue.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import re
 import subprocess
 import uuid
