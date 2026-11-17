@@ -790,18 +790,32 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         try:
             driver.get(target)
             step(f"page title: {driver.title[:80]}")
-            # Try to click play controls
-            for sel in ["[class*='play']", ".play-btn", "button.play", "video", "#player-option-1"]:
+            # Try to click play controls (longer wait)
+            clicked = False
+            for sel in [
+                "[class*='play']",
+                ".play-btn",
+                "button.play",
+                ".jw-icon-playback",
+                ".vjs-big-play-button",
+                "#player-option-1",
+                "video",
+                "button",
+            ]:
                 try:
-                    el = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
+                    el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
                     el.click()
                     step(f"clicked {sel}")
+                    clicked = True
                     break
                 except Exception:
                     continue
-            # Wait for possible media
+            if not clicked:
+                step("no play button found")
+            # Longer wait for media requests
             import time
-            time.sleep(8)
+            step("waiting 18s for media")
+            time.sleep(18)
             # Collect from performance logs if available
             try:
                 logs = driver.get_log("performance")
