@@ -801,28 +801,53 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         except Exception as exc:
             step(f"network enable failed: {exc}")
 
-        # Inject fetch/XHR hook before navigation
-        await tab.evaluate("""
+        # Inject fetch + XHR hook
+        hook_js = """
             () => {
+                if (window.__hooked) return;
+                window.__hooked = true;
                 window.__captured = window.__captured || [];
                 const origFetch = window.fetch;
                 window.fetch = async function(...args) {
                     const res = await origFetch.apply(this, args);
                     try {
-                        const url = (args[0] && args[0].url) || args[0] || '';
-                        if (String(url).includes('/ajax/sources') || String(url).includes('getSources')) {
+                        const url = String((args[0] && args[0].url) || args[0] || '');
+                        if (url.includes('/ajax/sources') || url.includes('getSources')) {
                             const clone = res.clone();
                             const text = await clone.text();
-                            window.__captured.push({url: String(url), body: text.slice(0, 2000)});
+                            window.__captured.push({url, body: text.slice(0, 2000)});
                         }
                     } catch(e) {}
                     return res;
                 };
+                const origOpen = XMLHttpRequest.prototype.open;
+                const origSend = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+                    this.__url = url;
+                    return origOpen.apply(this, [method, url, ...rest]);
+                };
+                XMLHttpRequest.prototype.send = function(...args) {
+                    this.addEventListener('load', function() {
+                        try {
+                            const url = String(this.__url || '');
+                            if (url.includes('/ajax/sources') || url.includes('getSources')) {
+                                window.__captured.push({url, body: (this.responseText || '').slice(0, 2000)});
+                            }
+                        } catch(e) {}
+                    });
+                    return origSend.apply(this, args);
+                };
             }
-        """)
-        step("fetch hook injected")
+        """
+        await tab.evaluate(hook_js)
+        step("fetch+XHR hook injected")
         await tab.get(url)
         step(f"page title: {(await tab.evaluate('document.title'))[:80]}")
+        try:
+            await tab.evaluate(hook_js)
+            step("hook re-injected after load")
+        except Exception:
+            pass
 
         # Free Turnstile attempt (nodriver style)
         await tab.sleep(3)
