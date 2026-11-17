@@ -925,6 +925,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         # Prefer in-page captured responses
         try:
             captured = await tab.evaluate("() => window.__captured || []")
+            step(f"window.__captured = {captured}")
             if captured:
                 step(f"in-page captured {len(captured)} responses")
                 for item in captured:
