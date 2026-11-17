@@ -768,7 +768,9 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-gpu")
-            driver = uc.Chrome(options=options)
+            options.add_argument("--disable-software-rasterizer")
+            options.binary_location = "/usr/bin/chromium"
+            driver = uc.Chrome(options=options, browser_executable_path="/usr/bin/chromium")
             step("using undetected-chromedriver")
         else:
             options = Options()

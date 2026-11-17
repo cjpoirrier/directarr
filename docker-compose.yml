@@ -4,6 +4,7 @@ services:
     # Uncomment to build locally instead of pulling:
     # build: .
     container_name: directarr
+    shm_size: "2gb"
     restart: unless-stopped
     ports:
       - "8787:8787"
