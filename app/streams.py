@@ -800,6 +800,27 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             step("network monitoring enabled (pre-nav)")
         except Exception as exc:
             step(f"network enable failed: {exc}")
+
+        # Inject fetch/XHR hook before navigation
+        await tab.evaluate("""
+            () => {
+                window.__captured = window.__captured || [];
+                const origFetch = window.fetch;
+                window.fetch = async function(...args) {
+                    const res = await origFetch.apply(this, args);
+                    try {
+                        const url = (args[0] && args[0].url) || args[0] || '';
+                        if (String(url).includes('/ajax/sources') || String(url).includes('getSources')) {
+                            const clone = res.clone();
+                            const text = await clone.text();
+                            window.__captured.push({url: String(url), body: text.slice(0, 2000)});
+                        }
+                    } catch(e) {}
+                    return res;
+                };
+            }
+        """)
+        step("fetch hook injected")
         await tab.get(url)
         step(f"page title: {(await tab.evaluate('document.title'))[:80]}")
 
@@ -876,13 +897,30 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
 
         # Parse /ajax/sources responses for the real embed/source
         ajax_urls = list(ajax_bodies.keys()) or [u for u in found if "/ajax/sources" in u]
+        # Prefer in-page captured responses
+        try:
+            captured = await tab.evaluate("() => window.__captured || []")
+            if captured:
+                step(f"in-page captured {len(captured)} responses")
+                for item in captured:
+                    body = item.get("body") or ""
+                    if body and ("embed" in body or "link" in body or "m3u8" in body):
+                        import json as _json
+                        try:
+                            data = _json.loads(body)
+                            link = data.get("link") or data.get("embed") or ""
+                            if link and link not in found:
+                                found.append(link)
+                                step(f"extracted: {link[:120]}")
+                        except Exception:
+                            pass
+        except Exception as exc:
+            step(f"read captured failed: {exc}")
+
         for ajax in ajax_urls[:1]:
             try:
                 resp = ajax_bodies.get(ajax) or ""
-                if resp:
-                    step(f"using captured ajax body ({len(resp)} chars)")
-                else:
-                    step("no captured body, skipping evaluate")
+                if not resp:
                     continue
                 if resp and ("embed" in resp or "link" in resp or "m3u8" in resp):
                     import json as _json
