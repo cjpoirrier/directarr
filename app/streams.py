@@ -790,20 +790,35 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         try:
             driver.get(target)
             step(f"page title: {driver.title[:80]}")
-            # Try to click play controls (longer wait)
-            clicked = False
-            for sel in [
-                "[class*='play']",
-                ".play-btn",
-                "button.play",
-                ".jw-icon-playback",
-                ".vjs-big-play-button",
-                "#player-option-1",
-                "video",
-                "button",
-            ]:
+            # Wait for dynamic player content
+            import time
+            step("waiting up to 15s for player container")
+            player_selectors = [
+                "#player", ".player", "[id*='player']", "[class*='player']",
+                "iframe", "video", ".jwplayer", ".video-js", "#embed",
+            ]
+            player_found = False
+            for sel in player_selectors:
                 try:
-                    el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
+                    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+                    step(f"player container appeared: {sel}")
+                    player_found = True
+                    break
+                except Exception:
+                    continue
+            if not player_found:
+                step("no player container found after wait")
+
+            # Broader click attempts including JS
+            clicked = False
+            click_selectors = [
+                "[class*='play']", ".play-btn", "button.play", ".jw-icon-playback",
+                ".vjs-big-play-button", "#player-option-1", "video", "button",
+                ".play", "[onclick*='play']",
+            ]
+            for sel in click_selectors:
+                try:
+                    el = WebDriverWait(driver, 4).until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
                     el.click()
                     step(f"clicked {sel}")
                     clicked = True
@@ -811,9 +826,41 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 except Exception:
                     continue
             if not clicked:
-                step("no play button found")
-            # Longer wait for media requests
-            import time
+                # JS fallback: click first visible element that looks like play
+                try:
+                    driver.execute_script("""
+                        const candidates = document.querySelectorAll('button, [class*="play"], video, .jw-icon-playback');
+                        for (const el of candidates) {
+                            if (el.offsetParent !== null) { el.click(); return true; }
+                        }
+                        return false;
+                    """)
+                    step("JS click attempted")
+                    clicked = True
+                except Exception as exc:
+                    step(f"JS click failed: {exc}")
+            if not clicked:
+                step("no play control found")
+
+            # Extra diagnostics
+            try:
+                iframes = driver.find_elements(By.TAG_NAME, "iframe")
+                step(f"iframes: {len(iframes)}")
+                for i, fr in enumerate(iframes[:5]):
+                    src = fr.get_attribute("src") or ""
+                    step(f"  iframe[{i}]: {src[:120]}")
+            except Exception:
+                pass
+            try:
+                # Log a short snippet of body text / player area
+                snippet = driver.execute_script("""
+                    const p = document.querySelector('#player, .player, [id*="player"]') || document.body;
+                    return (p.innerText || '').slice(0, 300);
+                """)
+                step(f"player area text: {snippet[:200].replace(chr(10), ' ')}")
+            except Exception:
+                pass
+
             step("waiting 18s for media")
             time.sleep(18)
             # Collect from performance logs if available
