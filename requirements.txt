@@ -11,4 +11,4 @@ playwright
 playwright-stealth
 undetected-chromedriver
 selenium>=4.33.0
-selenium-captcha-processing==1.0.2
+selenium-captcha-processing==1.0.2nodriver

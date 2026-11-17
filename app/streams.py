@@ -733,12 +733,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
 
 
 async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None, cookies: list | None = None) -> dict:
-    """Single-browser capture using Selenium + undetected-chromedriver.
+    """Single-browser capture using nodriver (better Turnstile handling than UC/Selenium).
 
-    Solve, click play, and capture media URLs all happen in the same browser
-    so Cloudflare/Turnstile clearance is not transferred between browsers.
-    Falls back to the previous Playwright path only if Selenium is unavailable.
-    Quality expansion is preserved.
+    Everything stays in one real Chrome session controlled by nodriver.
     """
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
@@ -746,188 +743,65 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         result["log"].append(msg)
         _log(msg)
 
-    step(f"browser capture start (selenium): {url}")
+    step(f"browser capture start (nodriver): {url}")
 
-    def _selenium_capture_sync(target: str) -> tuple[list[str], str]:
-        try:
-            import undetected_chromedriver as uc
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-        except ImportError:
-            # fall back to regular selenium
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.common.by import By
-            uc = None
+    try:
+        import nodriver as uc
+    except ImportError:
+        result["error"] = "nodriver not installed. pip install nodriver"
+        step(result["error"])
+        return result
 
-        found = []
-        if uc:
-            options = uc.ChromeOptions()
-            options.add_argument("--headless=new")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-software-rasterizer")
-            options.binary_location = "/usr/bin/chromium"
-            driver = uc.Chrome(
-                options=options,
-                browser_executable_path="/usr/bin/chromium",
-                driver_executable_path="/usr/bin/chromedriver",
-                version_main=None,
-            )
-            step("using undetected-chromedriver")
-        else:
-            options = Options()
-            options.add_argument("--headless=new")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-            driver = webdriver.Chrome(options=options)
-            step("using regular selenium")
+    browser = None
+    try:
+        browser = await uc.start(
+            headless=True,
+            browser_args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+        step("nodriver browser started")
+        tab = await browser.get(url)
+        step(f"page title: {(await tab.evaluate('document.title'))[:80]}")
 
-        try:
-            # Start browser first, then obtain FlareSolverr cookies and inject them
-            driver.get("about:blank")
-            step("browser started")
+        # Wait a bit for dynamic content
+        await tab.sleep(5)
 
-            # Get fresh cookies from FlareSolverr while browser is open
-            fs_cookies = cookies or []
-            if not fs_cookies:
-                try:
-                    import asyncio
-                    # Note: we are inside a sync thread; caller should pass cookies when possible
-                    step("no cookies passed, continuing without")
-                except Exception:
-                    pass
-
-            if fs_cookies:
-                # Navigate to domain so we can set cookies
-                driver.get("https://aniwaves.tv/")
-                for c in fs_cookies:
-                    if c.get("name"):
-                        try:
-                            driver.add_cookie({
-                                "name": c["name"],
-                                "value": c.get("value", ""),
-                                "domain": c.get("domain") or ".aniwaves.tv",
-                                "path": c.get("path", "/"),
-                                "secure": True,
-                                "sameSite": "None",
-                            })
-                        except Exception as exc:
-                            step(f"cookie set failed for {c.get('name')}: {exc}")
-                step(f"injected {len(fs_cookies)} cookies into running browser")
-
-            # Now go to the real target
-            driver.get(target)
-            step(f"page title: {driver.title[:80]}")
-            # Wait for dynamic player content
-            import time
-            step("waiting up to 15s for player container")
-            player_selectors = [
-                "#player", ".player", "[id*='player']", "[class*='player']",
-                "iframe", "video", ".jwplayer", ".video-js", "#embed",
-            ]
-            player_found = False
-            for sel in player_selectors:
-                try:
-                    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-                    step(f"player container appeared: {sel}")
-                    player_found = True
-                    break
-                except Exception:
-                    continue
-            if not player_found:
-                step("no player container found after wait")
-
-            # Broader click attempts including JS
-            clicked = False
-            click_selectors = [
-                "[class*='play']", ".play-btn", "button.play", ".jw-icon-playback",
-                ".vjs-big-play-button", "#player-option-1", "video", "button",
-                ".play", "[onclick*='play']",
-            ]
-            for sel in click_selectors:
-                try:
-                    el = WebDriverWait(driver, 4).until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
-                    el.click()
+        # Try to click play-like elements
+        clicked = False
+        for sel in ["[class*='play']", ".play-btn", "video", "button", ".jw-icon-playback"]:
+            try:
+                el = await tab.select(sel, timeout=3)
+                if el:
+                    await el.click()
                     step(f"clicked {sel}")
                     clicked = True
                     break
-                except Exception:
-                    continue
-            if not clicked:
-                # JS fallback: click first visible element that looks like play
-                try:
-                    driver.execute_script("""
-                        const candidates = document.querySelectorAll('button, [class*="play"], video, .jw-icon-playback');
-                        for (const el of candidates) {
-                            if (el.offsetParent !== null) { el.click(); return true; }
-                        }
-                        return false;
-                    """)
-                    step("JS click attempted")
-                    clicked = True
-                except Exception as exc:
-                    step(f"JS click failed: {exc}")
-            if not clicked:
-                step("no play control found")
+            except Exception:
+                continue
+        if not clicked:
+            step("no play control clicked")
 
-            # Extra diagnostics
-            try:
-                iframes = driver.find_elements(By.TAG_NAME, "iframe")
-                step(f"iframes: {len(iframes)}")
-                for i, fr in enumerate(iframes[:5]):
-                    src = fr.get_attribute("src") or ""
-                    step(f"  iframe[{i}]: {src[:120]}")
-            except Exception:
-                pass
-            try:
-                # Log a short snippet of body text / player area
-                snippet = driver.execute_script("""
-                    const p = document.querySelector('#player, .player, [id*="player"]') || document.body;
-                    return (p.innerText || '').slice(0, 300);
-                """)
-                step(f"player area text: {snippet[:200].replace(chr(10), ' ')}")
-            except Exception:
-                pass
+        # Extra wait for media
+        await tab.sleep(12)
 
-            step("waiting 18s for media")
-            time.sleep(18)
-            # Collect from performance logs if available
-            try:
-                logs = driver.get_log("performance")
-                for entry in logs:
-                    msg = entry.get("message", "")
-                    if ".m3u8" in msg.lower() or ".mp4" in msg.lower():
-                        import json
-                        try:
-                            data = json.loads(msg)
-                            u = data.get("message", {}).get("params", {}).get("request", {}).get("url", "")
-                            if u and (".m3u8" in u.lower() or ".mp4" in u.lower()) and u not in found:
-                                found.append(u)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            # Also scan page source
-            src = driver.page_source
+        # Collect media URLs from page
+        found = []
+        try:
+            html = await tab.get_content()
             import re as _re
-            for m in _re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', src, _re.I):
+            for m in _re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', html or "", _re.I):
                 if m not in found:
                     found.append(m)
-            step(f"selenium found {len(found)} media urls")
-            return found, driver.title
-        finally:
-            driver.quit()
+        except Exception as exc:
+            step(f"content scan failed: {exc}")
 
-    try:
-        found, title = await asyncio.to_thread(_selenium_capture_sync, url)
-        if title:
-            result["title"] = title
-        # Quality expansion (same as before)
+        step(f"nodriver found {len(found)} media urls")
+
+        # Quality expansion
         expanded = []
         for u in found[:5]:
             try:
@@ -938,7 +812,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                     real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
                     if real:
                         for k in real:
-                            k["name"] = "selenium"
+                            k["name"] = "nodriver"
                             k.setdefault("headers", {"Referer": url})
                             expanded.append(k)
                         continue
@@ -949,17 +823,25 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 "resolution": "captured",
                 "bandwidth": 0,
                 "codecs": "",
-                "name": "selenium",
+                "name": "nodriver",
                 "average_bandwidth": 0,
             })
         for v in expanded[:12]:
             v.setdefault("headers", {"Referer": url})
             result["variants"].append(v)
+
         if not found:
-            result["error"] = "No m3u8/mp4 requests seen in single-browser session."
+            result["error"] = "No m3u8/mp4 seen in nodriver session."
             step(result["error"])
+
     except Exception as exc:
-        step(f"selenium capture failed: {exc}")
+        step(f"nodriver capture failed: {exc}")
         result["error"] = str(exc)
+    finally:
+        if browser:
+            try:
+                await browser.stop()
+            except Exception:
+                pass
 
     return result
