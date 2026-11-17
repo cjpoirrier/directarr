@@ -42,7 +42,7 @@ async def _call_flaresolverr(payload: dict) -> dict:
 
 async def _fetch_via_flaresolverr(url: str, session_id: str | None = None, post_data: str | None = None) -> tuple[str, str, list]:
     cmd = "request.post" if post_data else "request.get"
-    payload = {"cmd": cmd, "url": url, "maxTimeout": 60000}
+    payload = {"cmd": cmd, "url": url, "maxTimeout": 120000}
     if session_id:
         payload["session"] = session_id
     if post_data:
@@ -736,8 +736,8 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
     """Load a page in a headless browser and capture m3u8/mp4 requests.
 
     Requires playwright and a Chromium install.
-    Creates/uses a FlareSolverr session, injects cookies, then expands
-    any master playlists into quality variants (your quality check is kept).
+    Uses FlareSolverr session + cookies, longer waits, and Selenium Turnstile
+    fallback if challenge frames remain. Quality expansion is preserved.
     """
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
@@ -756,13 +756,13 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         else:
             step("could not create FlareSolverr session")
 
-    # Try FlareSolverr first to get past Turnstile / Cloudflare
+    # Try FlareSolverr first
     fs_cookies: list = []
     try:
         step("trying FlareSolverr before browser")
         _, _, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
         result["cookies"] = fs_cookies
-        step(f"FlareSolverr returned {len(fs_cookies)} cookies")
+        step(f"FlareSolverr returned {len(fs_cookies)} cookies: {[c.get('name') for c in fs_cookies]}")
     except Exception as exc:
         step(f"FlareSolverr pre-check failed (continuing without): {exc}")
 
@@ -871,10 +871,21 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         break
                 except Exception:
                     pass
-            await page.wait_for_timeout(6000)
+            await page.wait_for_timeout(12000)
             # Check for iframes and try to interact
             frames = page.frames
             step(f"frames: {len(frames)}")
+            # If Turnstile frames are still present, try Selenium captcha solver
+            turnstile_frames = [f for f in frames if f.url and "challenges.cloudflare.com" in f.url]
+            if turnstile_frames:
+                step(f"Turnstile still present ({len(turnstile_frames)} frames), trying Selenium captcha")
+                sel = await _try_selenium_captcha(url)
+                if sel:
+                    step("Selenium captcha bypass succeeded, reloading with new cookies if possible")
+                    # Note: Selenium returns HTML; for full cookie transfer a more complex bridge is needed.
+                    # For now we log success and continue; media may still appear if solver cleared the page.
+                else:
+                    step("Selenium captcha fallback did not clear Turnstile")
             kisscloud = None
             for frame in frames:
                 try:
@@ -1025,7 +1036,6 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         result["error"] = "No m3u8/mp4 requests seen. The player may need a click or the stream is DRM."
         step(result["error"])
 
-    # Clean up FlareSolverr session if we created it
     if own_session and flaresolverr_session:
         await destroy_flaresolverr_session(flaresolverr_session)
         step("destroyed FlareSolverr session")
