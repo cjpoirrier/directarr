@@ -22,9 +22,8 @@ from .db import connect
 log = logging.getLogger("directarr.streams")
 USER_AGENT = "Directarr/0.2 StreamDetect"
 
-import asyncio
-# FlareSolverr + optional Selenium captcha fallback
-FLARESOLVERR_URL = "http://localhost:8191/v1"
+# FlareSolverr (configurable via env for Docker) + optional Selenium fallback
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://10.0.0.93:8191/v1")
 
 def _looks_like_cloudflare(text: str, status: int) -> bool:
     if status in (403, 503):
@@ -75,6 +74,7 @@ def _selenium_bypass_sync(url: str) -> tuple[str, str]:
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     options.add_argument("--disable-blink-features=AutomationControlled")
     driver = webdriver.Chrome(service=Service(), options=options)
     try:
@@ -90,6 +90,16 @@ async def _try_selenium_captcha(url: str) -> tuple[str, str] | None:
     except Exception as exc:
         _log(f"selenium captcha bypass failed: {exc}", "warning")
         return None
+
+async def make_persistent_client(headers: dict | None = None, cookies: list[dict] | None = None) -> httpx.AsyncClient:
+    """Reusable client that keeps cookies and connections open."""
+    hdrs = {"User-Agent": USER_AGENT, **(headers or {})}
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30, headers=hdrs)
+    for c in cookies or []:
+        name = c.get("name")
+        if name:
+            client.cookies.set(name, c.get("value", ""), domain=c.get("domain"), path=c.get("path", "/"))
+    return client
 
 
 # Simple ring buffer for recent stream-related log lines (shared with main)
@@ -125,13 +135,19 @@ def _safe_name(title: str, job_id: str) -> str:
     return (t or "episode")[:120]
 
 
-async def detect_streams(url: str, headers: dict | None = None, flaresolverr_session: str | None = None) -> dict[str, Any]:
+async def detect_streams(
+    url: str,
+    headers: dict | None = None,
+    flaresolverr_session: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
     """Fetch a page or M3U8 and return detected variants.
 
     The returned dict always includes a "log" list of steps for the UI.
-    Falls back to FlareSolverr on Cloudflare indicators, then optionally
-    to selenium-captcha-processing.
+    Pass a persistent client to keep cookies/connections open.
+    Falls back to FlareSolverr on Cloudflare, then optional Selenium captcha.
     """
+    own_client = client is None
     headers = {"User-Agent": USER_AGENT, **(headers or {})}
     result: dict[str, Any] = {
         "input": url,
@@ -139,6 +155,7 @@ async def detect_streams(url: str, headers: dict | None = None, flaresolverr_ses
         "variants": [],
         "error": None,
         "log": [],
+        "cookies": [],
     }
 
     def step(msg: str) -> None:
@@ -149,19 +166,25 @@ async def detect_streams(url: str, headers: dict | None = None, flaresolverr_ses
 
     text = ""
     final_url = url
+    fs_cookies: list = []
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
-            r = await client.get(url, headers=headers)
-            text = r.text
-            final_url = str(r.url)
-            status = r.status_code
+        if client is None:
+            client = httpx.AsyncClient(follow_redirects=True, timeout=20, headers=headers)
+        r = await client.get(url)
+        text = r.text
+        final_url = str(r.url)
+        status = r.status_code
         step(f"fetched {final_url} status={status} bytes={len(text)}")
         if _looks_like_cloudflare(text, status):
             step("Cloudflare indicators detected, trying FlareSolverr")
             try:
-                text, final_url, _ = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
-                step(f"FlareSolverr ok, bytes={len(text)}")
+                text, final_url, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
+                result["cookies"] = fs_cookies
+                for c in fs_cookies:
+                    if c.get("name"):
+                        client.cookies.set(c["name"], c.get("value", ""), domain=c.get("domain"), path=c.get("path", "/"))
+                step(f"FlareSolverr ok, bytes={len(text)} cookies={len(fs_cookies)}")
             except Exception as fs_exc:
                 step(f"FlareSolverr failed: {fs_exc}")
                 sel = await _try_selenium_captcha(url)
@@ -170,12 +193,21 @@ async def detect_streams(url: str, headers: dict | None = None, flaresolverr_ses
                     step("selenium-captcha-processing succeeded")
                 else:
                     result["error"] = f"blocked and fallbacks failed: {fs_exc}"
+                    if own_client:
+                        await client.aclose()
                     return result
     except Exception as exc:
         step(f"fetch failed: {exc}")
         try:
             step("trying FlareSolverr after exception")
-            text, final_url, _ = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
+            text, final_url, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
+            result["cookies"] = fs_cookies
+            if client is None:
+                client = await make_persistent_client(headers, fs_cookies)
+            else:
+                for c in fs_cookies:
+                    if c.get("name"):
+                        client.cookies.set(c["name"], c.get("value", ""), domain=c.get("domain"), path=c.get("path", "/"))
             step(f"FlareSolverr recovered, bytes={len(text)}")
         except Exception as fs_exc:
             step(f"FlareSolverr also failed: {fs_exc}")
@@ -185,6 +217,8 @@ async def detect_streams(url: str, headers: dict | None = None, flaresolverr_ses
                 step("selenium-captcha-processing recovered")
             else:
                 result["error"] = str(exc)
+                if own_client and client:
+                    await client.aclose()
                 return result
 
     # Direct M3U8?
