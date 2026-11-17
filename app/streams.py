@@ -829,34 +829,40 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         if embed_url:
             try:
                 step(f"opening embed: {embed_url[:80]}")
+                # Clear found so we only see new requests from the embed
+                pre_len = len(found)
                 await tab.get(embed_url)
-                await tab.sleep(5)
-                # Look for getSources in network or page
+                await tab.sleep(8)
+                # Check what new network requests appeared
+                new_reqs = found[pre_len:]
+                step(f"new requests after embed: {len(new_reqs)}")
+                for nr in new_reqs[:5]:
+                    step(f"  embed-net: {nr[:130]}")
+
                 html = await tab.evaluate("document.documentElement.outerHTML") or ""
+                step(f"embed html length: {len(html)}")
                 import re as _re
-                for m in _re.findall(r"https?://[^\s\"']*getSources[^\s\"']*", html):
+                for m in _re.findall(r"https?://[^\s\"']*(?:getSources|m3u8|file)[^\s\"']*", html, _re.I):
                     if m not in found:
                         found.append(m)
-                        step(f"getSources found: {m[:120]}")
-                for m in _re.findall(r"https?://[^\s\"']*m3u8[^\s\"']*", html, _re.I):
-                    if m not in found:
-                        found.append(m)
-                        step(f"m3u8 in embed: {m[:120]}")
-                # Also check for sources in JS
+                        step(f"from embed html: {m[:120]}")
+
+                # Look for source patterns in scripts
                 sources_js = await tab.evaluate("""
                     () => {
-                        const scripts = document.querySelectorAll('script');
-                        for (const s of scripts) {
+                        const out = [];
+                        document.querySelectorAll('script').forEach(s => {
                             const t = s.textContent || '';
-                            if (t.includes('sources') || t.includes('file') || t.includes('m3u8')) {
-                                return t.slice(0, 1500);
+                            if (t.includes('sources') || t.includes('file:') || t.includes('m3u8') || t.includes('getSources')) {
+                                out.push(t.slice(0, 800));
                             }
-                        }
-                        return '';
+                        });
+                        return out.slice(0, 2);
                     }
                 """)
                 if sources_js:
-                    step(f"embed script snippet: {sources_js[:200]}")
+                    for sj in sources_js:
+                        step(f"embed script: {sj[:180]}")
             except Exception as exc:
                 step(f"embed follow failed: {exc}")
 
