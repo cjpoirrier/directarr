@@ -732,7 +732,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         raise
 
 
-async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None) -> dict:
+async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None, cookies: list | None = None) -> dict:
     """Single-browser capture using Selenium + undetected-chromedriver.
 
     Solve, click play, and capture media URLs all happen in the same browser
@@ -788,6 +788,22 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             step("using regular selenium")
 
         try:
+            # Inject FlareSolverr cookies before navigation
+            if cookies:
+                driver.get("https://aniwaves.tv/")  # set domain first
+                for c in cookies:
+                    if c.get("name"):
+                        try:
+                            driver.add_cookie({
+                                "name": c["name"],
+                                "value": c.get("value", ""),
+                                "domain": c.get("domain") or ".aniwaves.tv",
+                                "path": c.get("path", "/"),
+                                "secure": True,
+                            })
+                        except Exception:
+                            pass
+                step(f"injected {len(cookies)} cookies into selenium")
             driver.get(target)
             step(f"page title: {driver.title[:80]}")
             # Wait for dynamic player content
