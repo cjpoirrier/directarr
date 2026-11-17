@@ -433,9 +433,18 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
         # Build header string for FFmpeg
         hdr_lines = []
         effective_headers = dict(headers or {})
-        # Kisscloud / similar hosts require a Referer
-        if "kisscloud" in stream_url.lower() and "referer" not in {k.lower() for k in effective_headers}:
-            effective_headers["Referer"] = "https://kisscloud.online/"
+        # Generic Referer: page URL if we have it, else stream origin
+        if "referer" not in {k.lower() for k in effective_headers}:
+            page = (headers or {}).get("Referer") or (headers or {}).get("referer")
+            if page:
+                effective_headers["Referer"] = page
+            else:
+                from urllib.parse import urlparse as _up
+                p = _up(stream_url)
+                if p.scheme and p.netloc:
+                    origin = f"{p.scheme}://{p.netloc}/"
+                    effective_headers["Referer"] = origin
+                    effective_headers.setdefault("Origin", origin.rstrip("/"))
         if "user-agent" not in {k.lower() for k in effective_headers}:
             effective_headers["User-Agent"] = USER_AGENT
         for k, v in effective_headers.items():
@@ -450,7 +459,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 import httpx as _httpx
                 probe_headers = {
                     "User-Agent": USER_AGENT,
-                    "Referer": effective_headers.get("Referer", "https://kisscloud.online/"),
+                    "Referer": effective_headers.get("Referer", ""),
                 }
                 with _httpx.Client(follow_redirects=True, timeout=15) as client:
                     pr = client.get(stream_url, headers=probe_headers)
@@ -495,15 +504,18 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             except Exception as exc:
                 probe_note = f"playlist probe failed: {exc}"
 
-        # For kisscloud-style playlists, download segments ourselves
-        if "kisscloud" in stream_url.lower() and ".m3u8" in stream_url.lower():
+        # Download segments ourselves for any m3u8 (avoids FFmpeg 403s)
+        if ".m3u8" in stream_url.lower():
             try:
                 import httpx as _httpx
                 from urllib.parse import urljoin
                 probe_headers = {
                     "User-Agent": USER_AGENT,
-                    "Referer": "https://kisscloud.online/",
+                    "Referer": effective_headers.get("Referer", ""),
+                    "Origin": effective_headers.get("Origin", ""),
                 }
+                probe_headers = {k: v for k, v in probe_headers.items() if v}
+                _log(f"download headers referer={probe_headers.get('Referer','')[:60]}")
                 with _httpx.Client(follow_redirects=True, timeout=30) as client:
                     master = client.get(stream_url, headers=probe_headers).text
                     import re as _re
