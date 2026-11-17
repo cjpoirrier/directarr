@@ -858,6 +858,28 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
 
         step(f"nodriver found {len(found)} media urls")
 
+        # Follow vhscdn embed pages to get the real source
+        embeds = [u for u in found if "vhscdn.to/embed" in u and "getSources" not in u]
+        for embed in embeds[:2]:
+            try:
+                step(f"following embed: {embed[:80]}")
+                await tab.get(embed)
+                await tab.sleep(6)
+                # Look for getSources in the new requests (already being collected)
+                # Also try to extract from page
+                html = await tab.get_content() or ""
+                import re as _re
+                for m in _re.findall(r'https?://[^\s"\'<>]*getSources[^\s"\'<>]*', html):
+                    if m not in found:
+                        found.append(m)
+                        step(f"found getSources: {m[:100]}")
+                for m in _re.findall(r'https?://[^\s"\'<>]*m3u8[^\s"\'<>]*', html, _re.I):
+                    if m not in found:
+                        found.append(m)
+                        step(f"found m3u8 in embed: {m[:100]}")
+            except Exception as exc:
+                step(f"embed follow failed: {exc}")
+
         # Quality expansion
         expanded = []
         for u in found[:5]:
