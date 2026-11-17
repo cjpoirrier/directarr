@@ -770,7 +770,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             try:
                 u = getattr(event, "request", None)
                 u = u.url if u else ""
-                if u and any(x in u.lower() for x in ("m3u8", ".mp4", ".ts", ".mkv", "getSources", "/ajax/sources", "vhscdn", "winghoster", "roburnt")):
+                if u and any(x in u.lower() for x in ("m3u8", "getSources", "/ajax/sources")):
                     if u not in found:
                         found.append(u)
                         step(f"network: {u[:140]}")
@@ -858,27 +858,37 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
 
         step(f"nodriver found {len(found)} media urls")
 
-        # Follow vhscdn embed pages to get the real source
-        embeds = [u for u in found if "vhscdn.to/embed" in u and "getSources" not in u]
-        for embed in embeds[:2]:
+        # Parse /ajax/sources responses for the real embed/source
+        ajax_urls = [u for u in found if "/ajax/sources" in u]
+        for ajax in ajax_urls[:1]:
             try:
-                step(f"following embed: {embed[:80]}")
-                await tab.get(embed)
-                await tab.sleep(6)
-                # Look for getSources in the new requests (already being collected)
-                # Also try to extract from page
-                html = await tab.get_content() or ""
-                import re as _re
-                for m in _re.findall(r'https?://[^\s"\'<>]*getSources[^\s"\'<>]*', html):
-                    if m not in found:
-                        found.append(m)
-                        step(f"found getSources: {m[:100]}")
-                for m in _re.findall(r'https?://[^\s"\'<>]*m3u8[^\s"\'<>]*', html, _re.I):
-                    if m not in found:
-                        found.append(m)
-                        step(f"found m3u8 in embed: {m[:100]}")
+                step(f"fetching ajax sources: {ajax[:80]}")
+                resp = await tab.evaluate(f"""
+                    async () => {{
+                        const r = await fetch({ajax!r}, {{credentials: 'include'}});
+                        return await r.text();
+                    }}
+                """)
+                step(f"ajax response length: {len(resp or '')}")
+                if resp and ("embed" in resp or "link" in resp or "m3u8" in resp):
+                    import json as _json
+                    try:
+                        data = _json.loads(resp)
+                        # Common patterns
+                        link = (data.get("link") or data.get("embed") or
+                                (data.get("sources") or [{}])[0].get("file") or "")
+                        if link and link not in found:
+                            found.append(link)
+                            step(f"extracted from ajax: {link[:100]}")
+                    except Exception:
+                        # raw search
+                        import re as _re
+                        for m in _re.findall(r'https?://[^\s"\']+', resp):
+                            if any(x in m for x in ("embed", "m3u8", "getSources")) and m not in found:
+                                found.append(m)
+                                step(f"extracted url: {m[:100]}")
             except Exception as exc:
-                step(f"embed follow failed: {exc}")
+                step(f"ajax parse failed: {exc}")
 
         # Quality expansion
         expanded = []
