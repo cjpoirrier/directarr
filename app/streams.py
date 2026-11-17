@@ -756,13 +756,40 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
         else:
             step("could not create FlareSolverr session")
 
-    # Try FlareSolverr first
+    # Try FlareSolverr first and parse its solved HTML for streams
     fs_cookies: list = []
+    fs_html = ""
+    fs_final = url
     try:
         step("trying FlareSolverr before browser")
-        _, _, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
+        fs_html, fs_final, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
         result["cookies"] = fs_cookies
-        step(f"FlareSolverr returned {len(fs_cookies)} cookies: {[c.get('name') for c in fs_cookies]}")
+        step(f"FlareSolverr returned {len(fs_cookies)} cookies: {[c.get('name') for c in fs_cookies]} html_bytes={len(fs_html)}")
+        # Parse the solved HTML for m3u8 / media immediately
+        if fs_html:
+            m3u8_urls = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', fs_html, re.I)
+            if not m3u8_urls:
+                rel = re.findall(r'["\']([^"\']+\.m3u8[^"\']*)["\']', fs_html, re.I)
+                m3u8_urls = [urljoin(fs_final, u) for u in rel]
+            if m3u8_urls:
+                step(f"FlareSolverr HTML contained {len(m3u8_urls)} m3u8 candidates")
+                # Use detect_streams logic on the first few
+                for murl in m3u8_urls[:3]:
+                    try:
+                        probe = await detect_streams(murl, headers={"Referer": url}, flaresolverr_session=flaresolverr_session)
+                        kids = probe.get("variants") or []
+                        real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
+                        if real or kids:
+                            step(f"streams found via FlareSolverr HTML: {len(real or kids)}")
+                            for k in (real or kids)[:8]:
+                                k["name"] = "flaresolverr"
+                                k.setdefault("headers", {"Referer": url})
+                                result["variants"].append(k)
+                            if own_session and flaresolverr_session:
+                                await destroy_flaresolverr_session(flaresolverr_session)
+                            return result
+                    except Exception as exc:
+                        step(f"FlareSolverr HTML probe failed: {exc}")
     except Exception as exc:
         step(f"FlareSolverr pre-check failed (continuing without): {exc}")
 
@@ -816,6 +843,8 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         "value": c.get("value", ""),
                         "domain": c.get("domain") or urlparse(url).hostname,
                         "path": c.get("path", "/"),
+                        "secure": True,
+                        "sameSite": "None",
                     })
                 if pw_cookies:
                     await context.add_cookies(pw_cookies)
