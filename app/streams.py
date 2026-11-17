@@ -733,22 +733,19 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
 
 
 async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None, cookies: list | None = None) -> dict:
-    """Single-browser capture using nodriver (better Turnstile handling than UC/Selenium).
-
-    Everything stays in one real Chrome session controlled by nodriver.
-    """
+    """Robust nodriver capture with multiple strategies for Aniwave-style sites."""
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
     def step(msg: str) -> None:
         result["log"].append(msg)
         _log(msg)
 
-    step(f"browser capture start (nodriver): {url}")
+    step(f"browser capture start (nodriver robust): {url}")
 
     try:
         import nodriver as uc
     except ImportError:
-        result["error"] = "nodriver not installed. pip install nodriver"
+        result["error"] = "nodriver not installed"
         step(result["error"])
         return result
 
@@ -756,253 +753,92 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
     try:
         browser = await uc.start(
             headless=True,
-            browser_args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-blink-features=AutomationControlled",
-            ],
+            browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
-        step("nodriver browser started")
-        # Enable network monitoring BEFORE navigation
+        step("nodriver started")
+        tab = await browser.get(url)
+        await tab.sleep(4)
+        title = await tab.evaluate("document.title") or ""
+        step(f"title: {title[:70]}")
+
         found = []
-        ajax_bodies = {}
-        def on_request(event):
+        def on_req(event):
             try:
-                u = getattr(event, "request", None)
-                u = u.url if u else ""
-                if u and any(x in u.lower() for x in ("m3u8", "getSources", "/ajax/sources")):
+                req = getattr(event, "request", None)
+                u = req.url if req else ""
+                if u and any(k in u.lower() for k in ("m3u8", "getsources", "/ajax/sources", "vhscdn.to/embed")):
                     if u not in found:
                         found.append(u)
-                        step(f"network: {u[:140]}")
+                        step(f"net: {u[:130]}")
             except Exception:
                 pass
-        async def on_response(event):
+        await tab.send(uc.cdp.network.enable())
+        tab.add_handler(uc.cdp.network.RequestWillBeSent, on_req)
+
+        for sel in ["[class*='play']", "video", "button"]:
             try:
-                resp = getattr(event, "response", None)
-                u = resp.url if resp else ""
-                if u and "/ajax/sources" in u:
-                    try:
-                        body = await tab.send(uc.cdp.network.get_response_body(request_id=event.request_id))
-                        text = body[0] if isinstance(body, (list, tuple)) else str(body)
-                        ajax_bodies[u] = text
-                        step(f"ajax body captured ({len(text)} chars)")
-                    except Exception as exc:
-                        step(f"get_response_body failed: {exc}")
-            except Exception:
-                pass
-        # We'll attach the handler after we have a tab
-        tab = await browser.get("about:blank")
-        try:
-            await tab.send(uc.cdp.network.enable())
-            tab.add_handler(uc.cdp.network.RequestWillBeSent, on_request)
-            tab.add_handler(uc.cdp.network.ResponseReceived, on_response)
-            step("network monitoring enabled (pre-nav)")
-        except Exception as exc:
-            step(f"network enable failed: {exc}")
-
-        # Inject fetch + XHR hook
-        hook_js = """
-            () => {
-                if (window.__hooked) return;
-                window.__hooked = true;
-                window.__captured = window.__captured || [];
-                const origFetch = window.fetch;
-                window.fetch = async function(...args) {
-                    const res = await origFetch.apply(this, args);
-                    try {
-                        const url = String((args[0] && args[0].url) || args[0] || '');
-                        if (url.includes('/ajax/sources') || url.includes('getSources')) {
-                            const clone = res.clone();
-                            const text = await clone.text();
-                            window.__captured.push({url, body: text.slice(0, 2000)});
-                        }
-                    } catch(e) {}
-                    return res;
-                };
-                const origOpen = XMLHttpRequest.prototype.open;
-                const origSend = XMLHttpRequest.prototype.send;
-                XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-                    this.__url = url;
-                    return origOpen.apply(this, [method, url, ...rest]);
-                };
-                XMLHttpRequest.prototype.send = function(...args) {
-                    this.addEventListener('load', function() {
-                        try {
-                            const url = String(this.__url || '');
-                            if (url.includes('/ajax/sources') || url.includes('getSources')) {
-                                window.__captured.push({url, body: (this.responseText || '').slice(0, 2000)});
-                            }
-                        } catch(e) {}
-                    });
-                    return origSend.apply(this, args);
-                };
-            }
-        """
-        await tab.evaluate(hook_js)
-        step("fetch+XHR hook injected")
-        await tab.get(url)
-        step(f"page title: {(await tab.evaluate('document.title'))[:80]}")
-        try:
-            await tab.evaluate(hook_js)
-            step("hook re-injected after load")
-        except Exception:
-            pass
-
-        # Free Turnstile attempt (nodriver style)
-        await tab.sleep(3)
-        try:
-            # Look for Turnstile iframe and try to interact
-            turnstile = await tab.select("iframe[src*='challenges.cloudflare.com']", timeout=5)
-            if turnstile:
-                step("Turnstile iframe found, attempting click")
-                await turnstile.click()
-                await tab.sleep(8)
-                # Check for token
-                token = await tab.evaluate("""
-                    () => document.querySelector('[name="cf-turnstile-response"]')?.value || ''
-                """)
-                if token:
-                    step(f"Turnstile token obtained ({len(token)} chars)")
-                else:
-                    step("no Turnstile token after click")
-            else:
-                step("no Turnstile iframe found")
-        except Exception as exc:
-            step(f"Turnstile attempt failed: {exc}")
-
-        # Wait a bit for dynamic content
-        await tab.sleep(5)
-
-        # Try to click play-like elements
-        clicked = False
-        for sel in ["[class*='play']", ".play-btn", "video", "button", ".jw-icon-playback"]:
-            try:
-                el = await tab.select(sel, timeout=3)
+                el = await tab.select(sel, timeout=2)
                 if el:
                     await el.click()
                     step(f"clicked {sel}")
-                    clicked = True
                     break
             except Exception:
                 continue
-        if not clicked:
-            step("no play control clicked")
 
-        # Click server tabs (DatSaV, Vidplay, etc.)
-        server_names = ["DatSaV", "Vidplay", "BYFMS", "DGHG", "MyCloud", "S-Sub"]
-        for name in server_names:
+        for name in ["DatSaV", "Vidplay", "BYFMS", "MyCloud"]:
             try:
-                # Try text match
                 el = await tab.find(name, best_match=True, timeout=2)
                 if el:
                     await el.click()
-                    step(f"clicked server: {name}")
-                    await tab.sleep(3)
+                    step(f"clicked server {name}")
+                    await tab.sleep(4)
                     break
             except Exception:
                 continue
-        else:
-            step("no server button clicked")
 
-        step("waiting 20s for media requests")
-        await tab.sleep(20)
+        await tab.sleep(8)
 
-        # Also scan page content as fallback
-        try:
-            html = await tab.get_content()
-            import re as _re
-            for m in _re.findall(r'https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*', html or "", _re.I):
-                if m not in found:
-                    found.append(m)
-        except Exception:
-            pass
-
-        step(f"nodriver found {len(found)} media urls")
-
-        # Parse /ajax/sources responses for the real embed/source
-        ajax_urls = list(ajax_bodies.keys()) or [u for u in found if "/ajax/sources" in u]
-        # Prefer in-page captured responses
-        try:
-            captured = await tab.evaluate("() => window.__captured || []")
-            step(f"window.__captured = {captured}")
-            if captured:
-                step(f"in-page captured {len(captured)} responses")
-                for item in captured:
-                    body = item.get("body") or ""
-                    if body and ("embed" in body or "link" in body or "m3u8" in body):
-                        import json as _json
-                        try:
-                            data = _json.loads(body)
-                            link = data.get("link") or data.get("embed") or ""
-                            if link and link not in found:
-                                found.append(link)
-                                step(f"extracted: {link[:120]}")
-                        except Exception:
-                            pass
-        except Exception as exc:
-            step(f"read captured failed: {exc}")
-
-        for ajax in ajax_urls[:1]:
+        ajax_urls = [u for u in found if "/ajax/sources" in u]
+        if ajax_urls:
             try:
-                resp = ajax_bodies.get(ajax) or ""
-                if not resp:
-                    continue
-                if resp and ("embed" in resp or "link" in resp or "m3u8" in resp):
-                    import json as _json
-                    try:
-                        data = _json.loads(resp)
-                        # Common patterns
-                        link = (data.get("link") or data.get("embed") or
-                                (data.get("sources") or [{}])[0].get("file") or "")
-                        if link and link not in found:
-                            found.append(link)
-                            step(f"extracted from ajax: {link[:100]}")
-                    except Exception:
-                        # raw search
-                        import re as _re
-                        for m in _re.findall(r'https?://[^\s"\']+', resp):
-                            if any(x in m for x in ("embed", "m3u8", "getSources")) and m not in found:
-                                found.append(m)
-                                step(f"extracted url: {m[:100]}")
+                step("opening ajax/sources directly")
+                await tab.get(ajax_urls[0])
+                await tab.sleep(2)
+                body = await tab.evaluate("document.body.innerText") or ""
+                step(f"ajax text: {body[:250]}")
+                import re as _re
+                for m in _re.findall(r"https?://[^\s\"']+", body):
+                    if m not in found:
+                        found.append(m)
+                        step(f"from ajax: {m[:120]}")
             except Exception as exc:
-                step(f"ajax parse failed: {exc}")
+                step(f"ajax direct failed: {exc}")
 
-        # Quality expansion
-        expanded = []
-        for u in found[:5]:
-            try:
-                if ".m3u8" in u.lower():
-                    headers = {"User-Agent": USER_AGENT, "Referer": url}
-                    probe = await detect_streams(u, headers=headers, flaresolverr_session=flaresolverr_session)
-                    kids = probe.get("variants") or []
-                    real = [k for k in kids if k.get("resolution") not in ("original", "captured", "", "unknown")]
-                    if real:
-                        for k in real:
-                            k["name"] = "nodriver"
-                            k.setdefault("headers", {"Referer": url})
-                            expanded.append(k)
-                        continue
-            except Exception as exc:
-                step(f"quality probe failed: {exc}")
-            expanded.append({
-                "url": u,
-                "resolution": "captured",
-                "bandwidth": 0,
-                "codecs": "",
-                "name": "nodriver",
-                "average_bandwidth": 0,
-            })
-        for v in expanded[:12]:
-            v.setdefault("headers", {"Referer": url})
-            result["variants"].append(v)
+        step(f"total candidates: {len(found)}")
 
-        if not found:
-            result["error"] = "No m3u8/mp4 seen in nodriver session."
+        for u in found:
+            low = u.lower()
+            if any(x in low for x in ("m3u8", ".mp4", ".ts")):
+                result["variants"].append({
+                    "url": u, "resolution": "captured", "bandwidth": 0,
+                    "codecs": "", "name": "nodriver", "headers": {"Referer": url},
+                })
+
+        if not result["variants"]:
+            for u in found:
+                if "/ajax/" not in u and "vhscdn" in u:
+                    result["variants"].append({
+                        "url": u, "resolution": "embed", "bandwidth": 0,
+                        "codecs": "", "name": "nodriver-embed", "headers": {"Referer": url},
+                    })
+                    break
+
+        if not result["variants"]:
+            result["error"] = "No usable media URL found"
             step(result["error"])
 
     except Exception as exc:
-        step(f"nodriver capture failed: {exc}")
+        step(f"capture failed: {exc}")
         result["error"] = str(exc)
     finally:
         if browser:
