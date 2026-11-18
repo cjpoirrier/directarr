@@ -652,22 +652,25 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 _log(f"manual download failed: {exc}", "error")
                 # fall through to normal ffmpeg
 
+        is_hls = ".m3u8" in stream_url.lower() or "/hls/" in stream_url.lower()
         cmd = [
             "ffmpeg", "-y",
             "-hide_banner", "-loglevel", "error",
             "-user_agent", USER_AGENT,
             "-allowed_extensions", "ALL",
             "-extension_picky", "0",
-            "-f", "hls",
         ]
+        if is_hls:
+            cmd += ["-f", "hls"]
         if header_arg:
             cmd += ["-headers", header_arg]
         cmd += [
             "-i", stream_url,
             "-c", "copy",
-            "-bsf:a", "aac_adtstoasc",
-            str(staging),
         ]
+        if is_hls:
+            cmd += ["-bsf:a", "aac_adtstoasc"]
+        cmd += [str(staging)]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Poll for cancel and timeout
