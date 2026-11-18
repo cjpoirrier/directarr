@@ -871,22 +871,23 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
 
             step(f"total captured: {len(found)}")
 
-            # Video only
+            # Video only — keep sources we extracted plus obvious media
             subtitles = []
             for u in found:
                 low = u.lower()
-                if any(x in low for x in (".vtt", ".srt", ".ass")):
+                if any(x in low for x in (".vtt", ".srt", ".ass", "sprite")):
                     subtitles.append(u)
                     continue
-                if any(x in low for x in (".m3u8", ".mp4", ".mkv", "/cdn/")):
-                    res = "1080p" if "1080" in low else "720p" if "720" in low else "unknown"
+                # Accept explicit media or anything from a CDN source host
+                if any(x in low for x in (".m3u8", ".mp4", ".mkv", "/cdn/", "savedly.net", "winghoster", "roburnt")):
+                    res = "1080p" if "1080" in low or "hd" in low else "720p" if "720" in low else "unknown"
                     result["variants"].append({
                         "url": u,
                         "resolution": res,
                         "bandwidth": 0,
                         "codecs": "",
                         "name": "camoufox",
-                        "type": "hls" if ".m3u8" in low or "/cdn/" in low else "direct",
+                        "type": "hls" if any(x in low for x in (".m3u8", "/cdn/", "savedly")) else "direct",
                         "headers": {"Referer": url},
                     })
             result["subtitles"] = subtitles
