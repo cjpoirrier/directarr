@@ -1,13 +1,16 @@
 const urlInput = document.getElementById("directarrUrl");
 const saveBtn = document.getElementById("save");
-const scanBtn = document.getElementById("scan");
 const qualitiesDiv = document.getElementById("qualities");
 const statusDiv = document.getElementById("status");
+const titleDiv = document.getElementById("title");
 const subsCheck = document.getElementById("includeSubs");
+const toggleSettings = document.getElementById("toggleSettings");
+const settingsPanel = document.getElementById("settingsPanel");
 
 chrome.storage.local.get(["directarrUrl", "includeSubs"], (data) => {
   if (data.directarrUrl) urlInput.value = data.directarrUrl;
   subsCheck.checked = !!data.includeSubs;
+  loadCaptured();
 });
 
 saveBtn.onclick = () => {
@@ -19,22 +22,32 @@ subsCheck.onchange = () => {
   chrome.storage.local.set({ includeSubs: subsCheck.checked });
 };
 
-scanBtn.onclick = async () => {
-  statusDiv.textContent = "Scanning…";
+toggleSettings.onclick = () => {
+  settingsPanel.classList.toggle("hidden");
+};
+
+async function loadCaptured() {
+  statusDiv.textContent = "Reading captured streams…";
   qualitiesDiv.innerHTML = "";
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.tabs.sendMessage(tab.id, { action: "scan" }, (res) => {
-    if (chrome.runtime.lastError) {
-      statusDiv.textContent = "Reload the page and try again";
+  chrome.tabs.sendMessage(tab.id, { action: "getCaptured" }, (res) => {
+    if (chrome.runtime.lastError || !res) {
+      titleDiv.textContent = "No data";
+      statusDiv.textContent = "Reload the page, play the video, then reopen this popup.";
       return;
     }
-    if (!res || !res.media || !res.media.length) {
-      statusDiv.textContent = "No media found (play the video first)";
-      return;
-    }
-    const base = urlInput.value.trim().replace(/\/$/, "");
-    if (!base) { statusDiv.textContent = "Set Directarr URL first"; return; }
     const title = res.title || "episode";
+    titleDiv.textContent = title;
+    if (!res.media || !res.media.length) {
+      statusDiv.textContent = "No media captured yet. Play the video on the page, then reopen the popup.";
+      return;
+    }
+    const base = (urlInput.value || "").trim().replace(/\/$/, "");
+    if (!base) {
+      statusDiv.textContent = "Set Directarr URL in Settings first";
+      settingsPanel.classList.remove("hidden");
+      return;
+    }
     res.media.forEach((m) => {
       const row = document.createElement("div");
       row.className = "quality";
@@ -60,8 +73,7 @@ scanBtn.onclick = async () => {
           });
           btn.textContent = "Sent";
           statusDiv.textContent = "Sent: " + title.slice(0, 40);
-          // Optional: close popup after a moment
-          setTimeout(() => window.close(), 1200);
+          setTimeout(() => window.close(), 1000);
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Retry";
@@ -71,6 +83,6 @@ scanBtn.onclick = async () => {
       row.appendChild(btn);
       qualitiesDiv.appendChild(row);
     });
-    statusDiv.textContent = res.media.length + " found — " + title.slice(0, 50);
+    statusDiv.textContent = res.media.length + " stream(s) captured";
   });
-};
+}
