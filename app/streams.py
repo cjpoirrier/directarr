@@ -419,6 +419,17 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
     from .downloader import is_cancelled, DownloadCancelled
     import shutil
 
+    # Guard: refuse embed/page URLs that are not actual media
+    low = stream_url.lower()
+    if ("/embed-" in low or "autoplay=" in low or "autostart=" in low) and not any(x in low for x in (".m3u8", ".mp4", ".mkv", ".ts", "savedly.net")):
+        with connect() as db:
+            db.execute(
+                "UPDATE downloads SET status='failed', error=? WHERE id=?",
+                ("URL looks like an embed page, not a media file. Capture the real stream first.", job_id),
+            )
+        _log(f"rejected non-media URL: {stream_url[:120]}")
+        return
+
     if not shutil.which("ffmpeg"):
         with connect() as db:
             db.execute(

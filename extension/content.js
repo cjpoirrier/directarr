@@ -7,8 +7,12 @@ const seen = new Set();
 function isMedia(url) {
   if (!url) return false;
   const u = url.toLowerCase();
+  // Reject obvious non-media and embed/page URLs
   if (u.endsWith(".js") || u.endsWith(".css") || u.endsWith(".woff") || u.endsWith(".svg") || u.endsWith(".png") || u.endsWith(".jpg")) return false;
   if (u.includes("subtitlemanager")) return false;
+  if (u.includes("/embed-") && !u.includes(".m3u8") && !u.includes(".mp4") && !u.includes("getsources")) return false;
+  if (u.includes("autoplay=") || u.includes("autostart=")) return false;
+
   return (
     u.includes(".m3u8") ||
     u.includes(".mp4") ||
@@ -17,11 +21,11 @@ function isMedia(url) {
     u.includes("master.txt") ||
     u.includes("do=getvideo") ||
     u.includes("getvideo") ||
-    /\/(playlist|master|index)\.m3u8/.test(u) ||
-    u.includes("/cdn/") ||
-    u.includes("savedly.net") ||
     u.includes("getsources") ||
-    u.includes("/ajax/sources")
+    /\/(playlist|master|index)\.m3u8/.test(u) ||
+    u.includes("savedly.net") ||
+    u.includes("winghoster") ||
+    (u.includes("/cdn/") && (u.includes(".mp4") || u.includes(".m3u8") || u.includes(".ts")))
   );
 }
 
@@ -39,10 +43,15 @@ function isSubtitle(url) {
 
 function guessQuality(url) {
   const u = url.toLowerCase();
-  if (u.includes("1080") || u.includes("fhd")) return "1080p";
-  if (u.includes("720") || u.includes("hd")) return "720p";
-  if (u.includes("480") || u.includes("sd")) return "480p";
-  if (u.includes("360")) return "360p";
+  // Common resolution tokens
+  if (/\b(1080|fhd|1920)\b/.test(u)) return "1080p";
+  if (/\b(720|hd|1280)\b/.test(u)) return "720p";
+  if (/\b(480|sd|854)\b/.test(u)) return "480p";
+  if (/\b(360|640)\b/.test(u)) return "360p";
+  if (/\b(2160|4k|uhd)\b/.test(u)) return "2160p";
+  // Query-param style
+  const q = u.match(/[?&](?:q|quality|res|resolution)=(\d{3,4})/i);
+  if (q) return q[1] + "p";
   return "unknown";
 }
 
@@ -50,6 +59,10 @@ function addMedia(url) {
   if (seen.has(url)) return;
   seen.add(url);
   media.push({ url, quality: guessQuality(url) });
+  // Notify background so the extension icon shows a badge
+  try {
+    chrome.runtime.sendMessage({ action: "mediaFound", count: media.length });
+  } catch (e) {}
 }
 
 function check(url) {

@@ -30,6 +30,9 @@ async function loadCaptured() {
   statusDiv.textContent = "Reading captured streams…";
   qualitiesDiv.innerHTML = "";
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // Clear the badge for this tab when the user opens the popup
+  if (tab?.id) chrome.runtime.sendMessage({ action: "clearBadge", tabId: tab.id });
+
   chrome.tabs.sendMessage(tab.id, { action: "getCaptured" }, (res) => {
     if (chrome.runtime.lastError || !res) {
       titleDiv.textContent = "No data";
@@ -48,10 +51,11 @@ async function loadCaptured() {
       settingsPanel.classList.remove("hidden");
       return;
     }
-    res.media.forEach((m) => {
+    res.media.forEach((m, idx) => {
       const row = document.createElement("div");
       row.className = "quality";
-      row.innerHTML = `<span style="flex:1">${m.quality || "video"}</span>`;
+      const label = m.quality && m.quality !== "unknown" ? m.quality : `Stream ${idx + 1}`;
+      row.innerHTML = `<span style="flex:1" title="${m.url}">${label}</span>`;
       const btn = document.createElement("button");
       btn.textContent = "Send";
       btn.onclick = async () => {
@@ -73,7 +77,7 @@ async function loadCaptured() {
           });
           btn.textContent = "Sent";
           statusDiv.textContent = "Sent: " + title.slice(0, 40);
-          setTimeout(() => window.close(), 1000);
+          // Do NOT close the popup — other streams stay available
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Retry";
