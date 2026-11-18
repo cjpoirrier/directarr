@@ -2160,7 +2160,7 @@
       const res = await api("/api/v1/streams/capture", { method: "POST", body: { url } });
       if (pre && res.log) pre.textContent = (res.log || []).join("\n");
       const variants = res.variants || [];
-      const pageTitle = res.title || "captured";
+      const pageTitle = (res.title || "").replace(/\s*[|–-]\s*Aniwave.*$/i, "").trim() || "episode";
       if (status) status.textContent = variants.length ? variants.length + " captured" : (res.error || "Nothing captured");
       if (table && variants.length) {
         table.innerHTML = variants.map((v, index) =>
@@ -2180,7 +2180,7 @@
               await api("/api/v1/streams/download", {
                 method: "POST",
                 body: {
-                  title: btn.getAttribute("data-stream-title") || pageTitle,
+                  title: (btn.getAttribute("data-stream-title") || pageTitle) + " " + (variant.resolution || ""),
                   url: variant.url,
                   headers: variant.headers || {},
                 },
