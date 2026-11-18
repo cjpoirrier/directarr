@@ -733,187 +733,118 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
 
 
 async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session: str | None = None, cookies: list | None = None) -> dict:
-    """Generic nodriver capture. Installs userscript-style hooks and collects media URLs."""
+    """Camoufox-based capture. Firefox engine with strong anti-fingerprinting."""
     result = {"input": url, "type": "browser", "variants": [], "error": None, "log": [], "cookies": []}
 
     def step(msg: str) -> None:
         result["log"].append(msg)
         _log(msg)
 
-    step(f"browser capture start (generic): {url}")
+    step(f"browser capture start (camoufox): {url}")
 
     try:
-        import nodriver as uc
+        from camoufox.async_api import AsyncCamoufox
     except ImportError:
-        result["error"] = "nodriver not installed"
+        result["error"] = "camoufox not installed (pip install camoufox[geoip])"
+        step(result["error"])
         return result
 
-    browser = None
     try:
-        browser = await uc.start(
-            headless=True,
-            browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
-        step("nodriver started")
-        tab = await browser.get(url)
-        await tab.sleep(3)
-        step(f"title: {(await tab.evaluate('document.title') or '')[:70]}")
+        async with AsyncCamoufox(headless=True) as browser:
+            page = await browser.new_page()
+            step("camoufox started")
 
-        # Install generic media capture hooks
-        await tab.evaluate("""
-            () => {
-                window.__media = window.__media || [];
-                function check(u) {
-                    if (!u) return;
-                    const s = String(u).toLowerCase();
-                    if (s.includes('.m3u8') || s.includes('.mp4') || s.includes('.mkv') ||
-                        s.includes('/cdn/hls/') || s.includes('master.txt') ||
-                        s.includes('do=getvideo') || s.includes('getsources') ||
-                        s.includes('/ajax/sources')) {
-                        if (!window.__media.includes(u)) window.__media.push(String(u));
-                    }
-                }
-                const of = window.fetch;
-                window.fetch = function(i, init) {
-                    try { check(typeof i === 'string' ? i : i && i.url); } catch(e) {}
-                    return of.apply(this, arguments);
-                };
-                const oo = XMLHttpRequest.prototype.open;
-                XMLHttpRequest.prototype.open = function(m, u) {
-                    try { check(u); } catch(e) {}
-                    return oo.apply(this, arguments);
-                };
-                try {
-                    const po = new PerformanceObserver(list => {
-                        for (const e of list.getEntries()) if (e.name) check(e.name);
-                    });
-                    po.observe({type: 'resource', buffered: true});
-                } catch(e) {}
-            }
-        """)
-        step("generic hooks installed")
+            # Capture media-like requests
+            found = []
+            def on_request(request):
+                u = request.url
+                low = u.lower()
+                if any(k in low for k in ("m3u8", "mp4", "mkv", "getsources", "/ajax/sources", "cdn/", "hls", "embed")):
+                    if u not in found:
+                        found.append(u)
+                        step(f"net: {u[:140]}")
+            page.on("request", on_request)
 
-        # Try common play clicks
-        for sel in ["[class*='play']", "video", "button", ".jw-icon-playback"]:
-            try:
-                el = await tab.select(sel, timeout=2)
-                if el:
-                    await el.click()
-                    step(f"clicked {sel}")
-                    break
-            except Exception:
-                continue
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(4000)
+            title = await page.title()
+            step(f"title: {title[:70]}")
 
-        await tab.sleep(12)
-
-        media = await tab.evaluate("() => window.__media || []") or []
-        step(f"captured {len(media)} media-like urls")
-        for m in media[:10]:
-            step(f"  {m[:140]}")
-
-        # If we got an ajax/sources, open it and extract the embed, then re-hook
-        ajax = next((u for u in media if "/ajax/sources" in u), None)
-        if ajax and not any(".m3u8" in u.lower() or ".mp4" in u.lower() for u in media):
-            try:
-                step("following ajax/sources")
-                await tab.get(ajax)
-                await tab.sleep(2)
-                body = await tab.evaluate("document.body.innerText") or ""
-                import json as _json
+            # Click play-like elements
+            for sel in ["[class*='play']", "video", "button"]:
                 try:
-                    data = _json.loads(body)
-                    embed = (data.get("result") or {}).get("url") or data.get("url")
-                    if embed:
-                        step(f"embed: {embed[:100]}")
-                        await tab.get(embed)
-                        await tab.sleep(2)
-                        await tab.evaluate("""
-                            () => {
-                                window.__media = [];
-                                function check(u) {
-                                    if (!u) return;
-                                    const s = String(u).toLowerCase();
-                                    if (s.includes('.m3u8') || s.includes('.mp4') || s.includes('/cdn/') ||
-                                        s.includes('getsources') || s.includes('master')) {
-                                        if (!window.__media.includes(u)) window.__media.push(String(u));
-                                    }
-                                }
-                                const of = window.fetch;
-                                window.fetch = function(i, init) {
-                                    try { check(typeof i === 'string' ? i : i && i.url); } catch(e) {}
-                                    return of.apply(this, arguments);
-                                };
-                                const oo = XMLHttpRequest.prototype.open;
-                                XMLHttpRequest.prototype.open = function(m, u) {
-                                    try { check(u); } catch(e) {}
-                                    return oo.apply(this, arguments);
-                                };
-                                try {
-                                    new PerformanceObserver(list => {
-                                        for (const e of list.getEntries()) if (e.name) check(e.name);
-                                    }).observe({type:'resource', buffered:true});
-                                } catch(e) {}
-                            }
-                        """)
-                        await tab.sleep(10)
-                        media2 = await tab.evaluate("() => window.__media || []") or []
-                        step(f"embed captured {len(media2)} urls")
-                        for m in media2[:8]:
-                            step(f"  {m[:140]}")
-                            if m not in media:
-                                media.append(m)
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        await el.click(timeout=3000)
+                        step(f"clicked {sel}")
+                        break
                 except Exception:
-                    pass
-            except Exception as exc:
-                step(f"ajax follow failed: {exc}")
+                    continue
 
-        # Build variants — video only for now
-        # Subtitles (.vtt/.srt/.ass) are collected but not returned yet
-        subtitles = []
-        for u in media:
-            low = u.lower()
-            is_sub = any(x in low for x in (".vtt", ".srt", ".ass", "subtitle"))
-            is_video = any(x in low for x in (".m3u8", ".mp4", ".mkv", ".ts", "/cdn/")) and not is_sub
-            if is_sub:
-                subtitles.append(u)
-                continue
-            if not is_video:
-                continue
-            # Rough quality guess from URL
-            res = "unknown"
-            if "1080" in low or "fhd" in low:
-                res = "1080p"
-            elif "720" in low or "hd" in low:
-                res = "720p"
-            elif "480" in low:
-                res = "480p"
-            elif "360" in low:
-                res = "360p"
-            kind = "hls" if ".m3u8" in low or "/cdn/" in low else "direct"
-            result["variants"].append({
-                "url": u,
-                "resolution": res,
-                "bandwidth": 0,
-                "codecs": "",
-                "name": kind,
-                "type": kind,
-                "headers": {"Referer": url},
-            })
-        result["subtitles"] = subtitles  # available for future checkbox
-        step(f"video variants: {len(result['variants'])}, subtitles seen: {len(subtitles)}")
+            # Click server buttons if present
+            for name in ["DatSaV", "Vidplay", "BYFMS", "MyCloud"]:
+                try:
+                    el = page.get_by_text(name, exact=False).first
+                    if await el.count() > 0:
+                        await el.click(timeout=3000)
+                        step(f"clicked server {name}")
+                        await page.wait_for_timeout(3000)
+                        break
+                except Exception:
+                    continue
 
-        if not result["variants"]:
-            result["error"] = "No media URL captured"
-            step(result["error"])
+            await page.wait_for_timeout(10000)
+
+            # If we saw ajax/sources, try to follow it
+            ajax = next((u for u in found if "/ajax/sources" in u), None)
+            if ajax:
+                try:
+                    step("following ajax/sources")
+                    resp = await page.goto(ajax, wait_until="domcontentloaded", timeout=15000)
+                    body = await page.evaluate("document.body.innerText") or ""
+                    step(f"ajax text: {body[:250]}")
+                    import json as _json
+                    try:
+                        data = _json.loads(body)
+                        embed = (data.get("result") or {}).get("url")
+                        if embed:
+                            step(f"embed: {embed[:100]}")
+                            await page.goto(embed, wait_until="domcontentloaded", timeout=20000)
+                            await page.wait_for_timeout(8000)
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    step(f"ajax follow failed: {exc}")
+
+            step(f"total captured: {len(found)}")
+
+            # Video only
+            subtitles = []
+            for u in found:
+                low = u.lower()
+                if any(x in low for x in (".vtt", ".srt", ".ass")):
+                    subtitles.append(u)
+                    continue
+                if any(x in low for x in (".m3u8", ".mp4", ".mkv", "/cdn/")):
+                    res = "1080p" if "1080" in low else "720p" if "720" in low else "unknown"
+                    result["variants"].append({
+                        "url": u,
+                        "resolution": res,
+                        "bandwidth": 0,
+                        "codecs": "",
+                        "name": "camoufox",
+                        "type": "hls" if ".m3u8" in low or "/cdn/" in low else "direct",
+                        "headers": {"Referer": url},
+                    })
+            result["subtitles"] = subtitles
+            step(f"video: {len(result['variants'])}, subs: {len(subtitles)}")
+
+            if not result["variants"]:
+                result["error"] = "No video URL captured"
+                step(result["error"])
 
     except Exception as exc:
-        step(f"capture failed: {exc}")
+        step(f"camoufox failed: {exc}")
         result["error"] = str(exc)
-    finally:
-        if browser:
-            try:
-                await browser.stop()
-            except Exception:
-                pass
 
     return result

@@ -13,3 +13,5 @@ undetected-chromedriver
 selenium>=4.33.0
 selenium-captcha-processing==1.0.2
 nodriver
+camoufox[geoip]
+nodriver
