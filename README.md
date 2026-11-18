@@ -41,4 +41,5 @@ You can add Directarr to Sonarr as a custom Torznab indexer. Sonarr does not hav
 ## Docs
 
 - [Setup](docs/SETUP.md) — install, first login, adding indexers, FlareSolverr, extension
+- [Settings](docs/SETTINGS.md) — every environment variable (required and optional)
 - [Google Drive](docs/GOOGLE_DRIVE.md) — OAuth client, auth flow, resolving share links

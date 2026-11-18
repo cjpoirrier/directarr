@@ -9,43 +9,24 @@ services:
     ports:
       - "8787:8787"
     # Run as root so bind-mounted ./config is always writable for SQLite.
-    # (Host files owned by root/UID mismatch are the usual "readonly database" cause.)
     user: "0:0"
     environment:
       TZ: America/Chicago
-      DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:?Set DIRECTARR_API_KEY in .env (long random string)}
-      # Web UI login (Sonarr-style). Change the password after first boot.
-      DIRECTARR_AUTH_MODE: ${DIRECTARR_AUTH_MODE:-forms}
-      DIRECTARR_AUTH_USERNAME: ${DIRECTARR_AUTH_USERNAME:-admin}
+      # Required. Set these in a .env file next to this compose file.
+      DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:?Set DIRECTARR_API_KEY in .env}
       DIRECTARR_AUTH_PASSWORD: ${DIRECTARR_AUTH_PASSWORD:?Set DIRECTARR_AUTH_PASSWORD in .env}
+      # Paths inside the container (match the volumes below). Do not change unless you also change the mounts.
       DIRECTARR_CONFIG_DIR: /config
       DIRECTARR_DOWNLOAD_DIR: /downloads
       DIRECTARR_STAGING_DIR: /staging
-      DIRECTARR_MAX_DOWNLOAD_MB: ${DIRECTARR_MAX_DOWNLOAD_MB:-20000}
-      # Parallel connections for HTTPS direct downloads (Drive uses API, not this)
-      DIRECTARR_DOWNLOAD_CONNECTIONS: ${DIRECTARR_DOWNLOAD_CONNECTIONS:-8}
-      DIRECTARR_DOWNLOAD_MULTI_MIN_MB: ${DIRECTARR_DOWNLOAD_MULTI_MIN_MB:-8}
-      DIRECTARR_ALLOWED_HOSTS: ${DIRECTARR_ALLOWED_HOSTS:-}
-      # Optional FlareSolverr-compatible service used for pasted stream-detection URLs.
-      # Leave empty to fetch URLs directly. Example: http://flaresolverr:8191/v1
-      DIRECTARR_FLARESOLVERR_URL: ${DIRECTARR_FLARESOLVERR_URL:-}
     volumes:
-      # Explicit :rw — required so SQLite can create the DB + WAL/journal files
       - ./config:/config:rw
       - ./downloads:/downloads:rw
       - ./staging:/staging:rw
       - ./camoufox-data:/root/.camoufox
-    # Root filesystem locked down; only the volumes above are writable.
-    # security_opt:
-    #   - no-new-privileges:true
-    # cap_drop: [ALL]
-    # read_only: true
-    # tmpfs:
-    #   - /tmp:size=64m,mode=1777
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=3)"]
       interval: 30s
       timeout: 5s
-      # Give uvicorn + DB init time after rebuild before marking unhealthy
       start_period: 45s
       retries: 5

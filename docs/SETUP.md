@@ -1,6 +1,6 @@
 # Setup
 
-## 1. Environment
+See [SETTINGS.md](SETTINGS.md) for every environment variable.
 
 ```bash
 cp .env.example .env
