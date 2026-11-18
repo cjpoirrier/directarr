@@ -1,0 +1,69 @@
+[
+  {
+    "id": "kayoanime",
+    "name": "KayoAnime",
+    "adapter": "kayoanime",
+    "protocol": "direct",
+    "privacy": "public",
+    "language": "en-US",
+    "categories": ["TV", "Anime"],
+    "description": "kayoanime.com — searches posts and extracts Google Drive share links. Requires your Google account for Drive downloads.",
+    "settings": [
+      {"name": "name", "label": "Display name", "type": "string", "default": "KayoAnime", "required": true},
+      {"name": "base_url", "label": "Base URL", "type": "url", "default": "https://kayoanime.com", "required": true},
+      {"name": "follow_posts", "label": "Open posts and extract Drive links", "type": "boolean", "default": true, "required": false},
+      {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": false},
+      {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": false},
+      {"name": "priority", "label": "Priority (lower = preferred)", "type": "number", "default": 25, "required": false}
+    ]
+  },
+  {
+    "id": "animekaizen",
+    "name": "AnimeKaizen",
+    "adapter": "generic_html",
+    "protocol": "direct",
+    "privacy": "public",
+    "language": "en-US",
+    "categories": ["TV", "Anime"],
+    "description": "www.animekaizen.org — searches posts and extracts a4u/open download links. Enable Follow posts so results are real download URLs.",
+    "settings": [
+      {"name": "name", "label": "Display name", "type": "string", "default": "AnimeKaizen", "required": true},
+      {"name": "base_url", "label": "Base URL", "type": "url", "default": "https://www.animekaizen.org", "required": true},
+      {"name": "search_url_template", "label": "Search URL template", "type": "string", "default": "/?s={query}", "required": true},
+      {"name": "selector_result", "label": "Result item selector", "type": "string", "default": "article", "required": true},
+      {"name": "selector_title", "label": "Title selector", "type": "string", "default": "h2 a, .entry-title a", "required": true},
+      {"name": "selector_url", "label": "Link selector", "type": "string", "default": "h2 a, .entry-title a", "required": true},
+      {"name": "selector_date", "label": "Date selector (optional)", "type": "string", "default": "", "required": false},
+      {"name": "follow_posts", "label": "Open posts and extract download links", "type": "boolean", "default": true, "required": false},
+      {"name": "selector_drive_link", "label": "Download link selector", "type": "string", "default": "a.a4u-download-link, a[href*='/open/?id=']", "required": false},
+      {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": false},
+      {"name": "max_results", "label": "Max search results", "type": "number", "default": 25, "required": false},
+      {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": false},
+      {"name": "priority", "label": "Priority (lower = preferred)", "type": "number", "default": 25, "required": false}
+    ]
+  },
+  {
+    "id": "generic_html",
+    "name": "Generic HTML site",
+    "adapter": "generic_html",
+    "protocol": "direct",
+    "privacy": "public",
+    "language": "en-US",
+    "categories": ["TV", "Anime"],
+    "description": "Any public HTML listing site. Configure the search URL template and CSS selectors. Turn on Follow posts so search returns download links instead of the post page.",
+    "settings": [
+      {"name": "name", "label": "Display name", "type": "string", "default": "My site", "required": true},
+      {"name": "base_url", "label": "Base URL", "type": "url", "default": "https://example.com", "required": true},
+      {"name": "search_url_template", "label": "Search URL template", "type": "string", "default": "/?s={query}", "required": true},
+      {"name": "selector_result", "label": "Result item selector", "type": "string", "default": "article", "required": true},
+      {"name": "selector_title", "label": "Title selector", "type": "string", "default": "h2 a, h2", "required": true},
+      {"name": "selector_url", "label": "Link selector", "type": "string", "default": "h2 a, a", "required": true},
+      {"name": "follow_posts", "label": "Open posts and extract download links", "type": "boolean", "default": true, "required": false},
+      {"name": "selector_drive_link", "label": "Download link selector", "type": "string", "default": "a[href*='drive.google.com'], a[href*='/open/?id=']", "required": false},
+      {"name": "max_posts", "label": "Max posts to open", "type": "number", "default": 5, "required": false},
+      {"name": "max_results", "label": "Max search results", "type": "number", "default": 25, "required": false},
+      {"name": "timeout", "label": "HTTP timeout (seconds)", "type": "number", "default": 25, "required": false},
+      {"name": "priority", "label": "Priority (lower = preferred)", "type": "number", "default": 25, "required": false}
+    ]
+  }
+]

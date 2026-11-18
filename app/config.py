@@ -28,7 +28,7 @@ def _load_api_key() -> str:
                 return stored
     except OSError:
         pass
-    return os.getenv("DIRECTARR_API_KEY", "change-this-long-random-key")
+    return os.getenv("DIRECTARR_API_KEY", "")
 
 
 API_KEY = _load_api_key()
@@ -77,7 +77,7 @@ GDRIVE_SCOPES = [
 
 # Web UI login (Sonarr-style). API key remains for Torznab / external tools only.
 AUTH_USERNAME = os.getenv("DIRECTARR_AUTH_USERNAME", "admin")
-AUTH_PASSWORD = os.getenv("DIRECTARR_AUTH_PASSWORD", "admin")
+AUTH_PASSWORD = os.getenv("DIRECTARR_AUTH_PASSWORD", "")
 AUTH_PASSWORD_HASH_FILE = CONFIG_DIR / "auth_password_hash.txt"
 SESSION_SECRET_FILE = CONFIG_DIR / "session_secret.txt"
 # "forms" = require login for UI+API (except health/torznab with apikey)

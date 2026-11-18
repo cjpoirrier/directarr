@@ -126,6 +126,16 @@ def _write_raw(raw: list[dict[str, Any]]) -> None:
 
 
 def list_adapter_catalog() -> list[dict[str, Any]]:
+    """Return the indexer catalog. Prefer config/indexers-catalog.json when present
+    so the list can be updated and shared without a code change."""
+    path = CONFIG_DIR / "indexers-catalog.json"
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list) and data:
+                return data
+        except Exception:
+            pass
     return list(ADAPTER_CATALOG)
 
 

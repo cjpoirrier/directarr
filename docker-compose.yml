@@ -13,11 +13,11 @@ services:
     user: "0:0"
     environment:
       TZ: America/Chicago
-      DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:-change-this-long-random-key}
-      # Web UI login (Sonarr-style). Change these after first boot.
+      DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:?Set DIRECTARR_API_KEY in .env (long random string)}
+      # Web UI login (Sonarr-style). Change the password after first boot.
       DIRECTARR_AUTH_MODE: ${DIRECTARR_AUTH_MODE:-forms}
       DIRECTARR_AUTH_USERNAME: ${DIRECTARR_AUTH_USERNAME:-admin}
-      DIRECTARR_AUTH_PASSWORD: ${DIRECTARR_AUTH_PASSWORD:-admin}
+      DIRECTARR_AUTH_PASSWORD: ${DIRECTARR_AUTH_PASSWORD:?Set DIRECTARR_AUTH_PASSWORD in .env}
       DIRECTARR_CONFIG_DIR: /config
       DIRECTARR_DOWNLOAD_DIR: /downloads
       DIRECTARR_STAGING_DIR: /staging
@@ -27,7 +27,8 @@ services:
       DIRECTARR_DOWNLOAD_MULTI_MIN_MB: ${DIRECTARR_DOWNLOAD_MULTI_MIN_MB:-8}
       DIRECTARR_ALLOWED_HOSTS: ${DIRECTARR_ALLOWED_HOSTS:-}
       # Optional FlareSolverr-compatible service used for pasted stream-detection URLs.
-      DIRECTARR_FLARESOLVERR_URL: ${DIRECTARR_FLARESOLVERR_URL-http://10.0.0.93:8191/v1}
+      # Leave empty to fetch URLs directly. Example: http://flaresolverr:8191/v1
+      DIRECTARR_FLARESOLVERR_URL: ${DIRECTARR_FLARESOLVERR_URL:-}
     volumes:
       # Explicit :rw — required so SQLite can create the DB + WAL/journal files
       - ./config:/config:rw

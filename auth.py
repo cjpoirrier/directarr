@@ -68,7 +68,7 @@ def get_password_hash() -> str:
                 return stored
     except OSError:
         pass
-    hashed = hash_password(config.AUTH_PASSWORD or "admin")
+    hashed = hash_password(config.AUTH_PASSWORD or "")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(hashed + "\n", encoding="utf-8")

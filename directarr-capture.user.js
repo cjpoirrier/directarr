@@ -1,11 +1,17 @@
 // ==UserScript==
 // @name         Directarr Stream Capture
 // @namespace    https://github.com/cjpoirrier/directarr
-// @version      0.3
-// @description  Capture media and subtitle requests and send them to Directarr
+// @version      0.4
+// @description  Quietly capture media streams and send them to Directarr
 // @match        *://*/*
 // @include      *
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @connect      10.0.0.93
+// @connect      localhost
+// @connect      127.0.0.1
 // @connect      *
 // @run-at       document-start
 // ==/UserScript==
@@ -13,25 +19,24 @@
 (function () {
   "use strict";
 
-  console.log("[Directarr] script loaded on", location.href);
-  // Tiny on-page marker so you can see it ran
-  document.addEventListener("DOMContentLoaded", () => {
-    const mark = document.createElement("div");
-    mark.textContent = "D";
-    mark.title = "Directarr capture active";
-    mark.style.cssText = "position:fixed;top:8px;right:8px;background:#3b82f6;color:#fff;width:22px;height:22px;border-radius:50%;text-align:center;line-height:22px;font:bold 12px sans-serif;z-index:999999";
-    document.body.appendChild(mark);
-  });
+  // Configurable via Tampermonkey menu (right-click the script)
+  let DIRECTARR = GM_getValue("directarrUrl", "http://localhost:8787");
+  const API_KEY = GM_getValue("apiKey", "");
 
-  const DIRECTARR = "http://10.0.0.93:8787"; // <-- your Directarr URL
-  const API_KEY = ""; // optional
+  GM_registerMenuCommand("Set Directarr URL", () => {
+    const url = prompt("Directarr base URL", DIRECTARR);
+    if (url) {
+      DIRECTARR = url.replace(/\/$/, "");
+      GM_setValue("directarrUrl", DIRECTARR);
+      alert("Saved: " + DIRECTARR);
+    }
+  });
 
   const seen = new Set();
 
   function isMedia(url) {
     if (!url) return false;
     const u = url.toLowerCase();
-    // Reject obvious non-media
     if (u.endsWith(".js") || u.endsWith(".css") || u.endsWith(".woff") || u.endsWith(".svg") || u.endsWith(".png")) return false;
     if (u.includes("subtitlemanager")) return false;
     return (
@@ -41,7 +46,10 @@
       u.includes("/cdn/hls/") ||
       u.includes("master.txt") ||
       u.includes("do=getvideo") ||
-      /\/(playlist|master|index)\.m3u8/.test(u)
+      u.includes("getvideo") ||
+      /\/(playlist|master|index)\.m3u8/.test(u) ||
+      u.includes("getsources") ||
+      u.includes("/ajax/sources")
     );
   }
 
@@ -60,10 +68,10 @@
   function send(url, kind) {
     if (seen.has(url)) return;
     seen.add(url);
-    const title = (document.title || "Captured") + (kind === "sub" ? " [sub]" : "");
+    const title = (document.title || "Captured").slice(0, 180) + (kind === "sub" ? " [sub]" : "");
     const body = JSON.stringify({
-      title: title.slice(0, 200),
-      url: url,
+      title,
+      url,
       headers: {
         Referer: location.href,
         Origin: location.origin,
@@ -78,36 +86,22 @@
         ...(API_KEY ? { "X-Api-Key": API_KEY } : {}),
       },
       data: body,
-      onload: function (res) {
-        console.log("[Directarr]", kind, url, res.status);
-        notify((kind === "sub" ? "Subtitle: " : "Queued: ") + title.slice(0, 50));
-      },
-      onerror: function () {
-        notify("Directarr error");
-      },
+      onload: () => console.log("[Directarr]", kind, url),
+      onerror: () => console.warn("[Directarr] send failed", url),
     });
   }
 
   function check(url) {
     if (!url) return;
-    if (url.includes("neocdn") || url.includes("m3u8") || url.includes(".mp4") || url.includes("getVideo") || url.includes("/hls/")) {
-      console.log("[Directarr] saw:", url);
-    }
     if (isMedia(url)) {
-      // If it's the getVideo API, fetch it and look for a real playlist
-      if (url.includes("do=getVideo") || url.includes("do=getvideo")) {
+      if (url.includes("do=getVideo") || url.includes("do=getvideo") || url.includes("getvideo")) {
         fetch(url, { credentials: "include" })
           .then(r => r.text())
           .then(text => {
             const m = text.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/i) ||
                       text.match(/https?:\/\/[^"'\s]+\/master\.txt[^"'\s]*/i) ||
                       text.match(/https?:\/\/[^"'\s]+\/cdn\/hls\/[^"'\s]+/i);
-            if (m) {
-              console.log("[Directarr] resolved playlist:", m[0]);
-              send(m[0], "media");
-            } else {
-              console.log("[Directarr] getVideo response (first 300):", text.slice(0, 300));
-            }
+            if (m) send(m[0], "media");
           })
           .catch(() => {});
         return;
@@ -118,43 +112,26 @@
     }
   }
 
-  function notify(msg) {
-    const el = document.createElement("div");
-    el.textContent = msg;
-    el.style.cssText =
-      "position:fixed;bottom:12px;right:12px;background:#111;color:#fff;" +
-      "padding:8px 12px;border-radius:6px;z-index:999999;font:13px sans-serif;" +
-      "box-shadow:0 2px 8px rgba(0,0,0,.4);max-width:320px";
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
-  }
-
-  // fetch
+  // Hooks
   const origFetch = window.fetch;
   window.fetch = function (input, init) {
     try {
-      const url = typeof input === "string" ? input : (input && input.url);
+      const url = typeof input === "string" ? input : input?.url;
       check(url);
     } catch (e) {}
     return origFetch.apply(this, arguments);
   };
 
-  // XHR
   const origOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url) {
     try { check(url); } catch (e) {}
     return origOpen.apply(this, arguments);
   };
 
-  // Performance observer as a backup (catches some players that bypass hooks)
   try {
     const po = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        if (entry.name) check(entry.name);
-      }
+      for (const e of list.getEntries()) if (e.name) check(e.name);
     });
     po.observe({ type: "resource", buffered: true });
   } catch (e) {}
-
-  console.log("[Directarr] capture active (media + subtitles)");
 })();

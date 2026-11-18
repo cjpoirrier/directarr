@@ -32,8 +32,8 @@ code { background: var(--bg3); padding: 0.15rem 0.4rem; border-radius: 4px; font
 .brand strong { display: block; font-size: 1.05rem; }
 .brand small { color: var(--muted); }
 .logo {
-  width: 36px; height: 36px; border-radius: 9px; background: linear-gradient(135deg, #5b9fff, #7c5cff);
-  display: grid; place-items: center; font-weight: 700; flex-shrink: 0;
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+  object-fit: contain; background: transparent; display: block;
 }
 nav { display: flex; flex-direction: column; gap: 0.25rem; flex: 1; }
 .nav-btn {
