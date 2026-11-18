@@ -874,6 +874,33 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 except Exception as exc:
                     step(f"getSources in-page failed: {exc}")
 
+            # Generic: if no direct media yet, follow any embed-like URL
+            has_media = any(x in u.lower() for u in found for x in (".m3u8", ".mp4", ".mkv", "savedly.net", "/cdn/"))
+            if not has_media:
+                embed_candidate = next((
+                    u for u in found
+                    if any(k in u.lower() for k in ("embed", "player", "iframe"))
+                    and "getSources" not in u and "/ajax/" not in u
+                ), None)
+                if embed_candidate:
+                    try:
+                        step(f"following embed: {embed_candidate[:90]}")
+                        await page.goto(embed_candidate, wait_until="domcontentloaded", timeout=20000)
+                        await page.wait_for_timeout(5000)
+                        for sel in ["[class*='play']", "video", ".jw-icon-playback", "button"]:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.count() > 0:
+                                    await el.click(timeout=2000)
+                                    step(f"clicked {sel} in embed")
+                                    break
+                            except Exception:
+                                continue
+                        await page.wait_for_timeout(8000)
+                        step(f"after embed, found: {len(found)}")
+                    except Exception as exc:
+                        step(f"embed follow failed: {exc}")
+
             step(f"total captured: {len(found)}")
 
             # Video only — keep sources we extracted plus obvious media
