@@ -902,6 +902,16 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         await page.wait_for_timeout(8000)
                         # Log recent requests and scan page for video URLs
                         step(f"after embed, found: {len(found)}")
+                        # Dump recent request URLs for debugging
+                        try:
+                            # Re-read from performance entries
+                            entries = await page.evaluate("""
+                                () => performance.getEntriesByType('resource').map(e => e.name).slice(-30)
+                            """)
+                            for e in (entries or [])[-15:]:
+                                step(f"  res: {e[:130]}")
+                        except Exception:
+                            pass
                         try:
                             html = await page.content()
                             import re as _re
