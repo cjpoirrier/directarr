@@ -891,26 +891,48 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         "headers": {"Referer": url},
                     })
             result["subtitles"] = subtitles
-            # Follow short CDN links to get the real media URL
+            # Follow short CDN links via fetch (avoids navigation timeout)
             resolved = []
             for v in result["variants"]:
                 u = v["url"]
-                if "savedly.net" in u or (not any(x in u.lower() for x in (".m3u8", ".mp4", ".mkv"))):
+                if "savedly.net" in u or (not any(x in u.lower() for x in (".m3u8", ".mp4", ".mkv", ".ts"))):
                     try:
                         step(f"resolving {u[:60]}")
-                        resp = await page.goto(u, wait_until="domcontentloaded", timeout=15000)
-                        final = page.url
-                        body = await page.evaluate("document.body.innerText") or ""
-                        step(f"  final={final[:80]} body={body[:150]}")
-                        # Look for m3u8 in the page or final URL
-                        import re as _re
-                        m = _re.search(r"https?://[^\s\"']+\.m3u8[^\s\"']*", body, _re.I)
-                        if m:
-                            v["url"] = m.group(0)
-                            step(f"  resolved m3u8: {v['url'][:100]}")
-                        elif ".m3u8" in final.lower() or "/cdn/" in final:
-                            v["url"] = final
-                            step(f"  resolved to: {final[:100]}")
+                        info = await page.evaluate(f"""
+                            async () => {{
+                                try {{
+                                    const r = await fetch({u!r}, {{
+                                        credentials: 'include',
+                                        redirect: 'follow',
+                                        headers: {{ 'Accept': '*/*' }}
+                                    }});
+                                    const text = await r.text();
+                                    return {{
+                                        status: r.status,
+                                        finalUrl: r.url,
+                                        contentType: r.headers.get('content-type') || '',
+                                        body: text.slice(0, 500)
+                                    }};
+                                }} catch(e) {{
+                                    return {{ error: String(e) }};
+                                }}
+                            }}
+                        """)
+                        step(f"  resolve info: {info}")
+                        if info and not info.get("error"):
+                            body = info.get("body") or ""
+                            final = info.get("finalUrl") or u
+                            import re as _re
+                            m = _re.search(r"https?://[^\s\"']+\.(?:m3u8|mp4|ts)[^\s\"']*", body, _re.I)
+                            if m:
+                                v["url"] = m.group(0)
+                                step(f"  resolved: {v['url'][:100]}")
+                            elif any(x in final.lower() for x in (".m3u8", ".mp4", "/cdn/")):
+                                v["url"] = final
+                                step(f"  resolved to final: {final[:100]}")
+                            elif "#EXTM3U" in body:
+                                # body itself is a playlist — keep original but note it
+                                step("  body is m3u8 content")
                         resolved.append(v)
                     except Exception as exc:
                         step(f"  resolve failed: {exc}")
