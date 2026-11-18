@@ -888,7 +888,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         "codecs": "",
                         "name": "camoufox",
                         "type": "hls" if any(x in low for x in (".m3u8", "/cdn/", "savedly")) else "direct",
-                        "headers": {"Referer": url},
+                        "headers": {"Referer": "https://play.vhscdn.to/", "Origin": "https://play.vhscdn.to"},
                     })
             result["subtitles"] = subtitles
             # Follow short CDN links via fetch (avoids navigation timeout)
