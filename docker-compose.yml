@@ -13,19 +13,15 @@ services:
     environment:
       TZ: America/Chicago
       # Required. Set these in a .env file next to this compose file.
-      DIRECTARR_API_KEY: ${DIRECTARR_API_KEY:?Set DIRECTARR_API_KEY in .env}
-      DIRECTARR_AUTH_PASSWORD: ${DIRECTARR_AUTH_PASSWORD:?Set DIRECTARR_AUTH_PASSWORD in .env}
-      # Paths inside the container (match the volumes below). Do not change unless you also change the mounts.
-      DIRECTARR_CONFIG_DIR: /config
-      DIRECTARR_DOWNLOAD_DIR: /downloads
-      DIRECTARR_STAGING_DIR: /staging
+      DIRECTARR_AUTH_USERNAME: admin
+      DIRECTARR_AUTH_PASSWORD: admin
     volumes:
       - ./config:/config:rw
       - ./downloads:/downloads:rw
       - ./staging:/staging:rw
       - ./camoufox-data:/root/.camoufox
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8787/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       start_period: 45s
