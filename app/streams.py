@@ -816,34 +816,46 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 except Exception as exc:
                     step(f"ajax follow failed: {exc}")
 
-            # Follow getSources if present
+            # Call getSources from the embed page context (keeps cookies/referer)
             gs = next((u for u in found if "getSources" in u), None)
             if gs:
                 try:
-                    step(f"following getSources: {gs[:80]}")
-                    await page.goto(gs, wait_until="domcontentloaded", timeout=15000)
-                    await page.wait_for_timeout(3000)
-                    gbody = await page.evaluate("document.body.innerText") or ""
-                    step(f"getSources body: {gbody[:400]}")
-                    import json as _json
-                    try:
-                        gd = _json.loads(gbody)
-                        for s in (gd.get("sources") or []):
-                            fu = s.get("file") or s.get("url") or ""
-                            if fu and fu not in found:
-                                found.append(fu)
-                                step(f"source: {fu[:120]}")
-                        # sometimes the playlist is nested
-                        if isinstance(gd.get("sources"), str):
-                            found.append(gd["sources"])
-                    except Exception:
-                        import re as _re
-                        for m in _re.findall(r"https?://[^\s\"']+", gbody):
-                            if m not in found and any(x in m.lower() for x in ("m3u8", "cdn", "mp4")):
-                                found.append(m)
-                                step(f"from body: {m[:120]}")
+                    step(f"fetching getSources in-page: {gs[:80]}")
+                    gbody = await page.evaluate(f"""
+                        async () => {{
+                            const r = await fetch({gs!r}, {{
+                                credentials: 'include',
+                                headers: {{
+                                    'X-Requested-With': 'XMLHttpRequest',
+                                    'Accept': 'application/json, text/plain, */*'
+                                }}
+                            }});
+                            return await r.text();
+                        }}
+                    """)
+                    step(f"getSources body: {(gbody or '')[:400]}")
+                    if gbody and ("file" in gbody or "m3u8" in gbody or "sources" in gbody):
+                        import json as _json
+                        try:
+                            gd = _json.loads(gbody)
+                            sources = gd.get("sources") or []
+                            if isinstance(sources, list):
+                                for s in sources:
+                                    fu = (s.get("file") or s.get("url") or "") if isinstance(s, dict) else str(s)
+                                    if fu and fu not in found:
+                                        found.append(fu)
+                                        step(f"source: {fu[:120]}")
+                            elif isinstance(sources, str) and sources not in found:
+                                found.append(sources)
+                                step(f"source str: {sources[:120]}")
+                        except Exception:
+                            import re as _re
+                            for m in _re.findall(r"https?://[^\s\"']+", gbody):
+                                if m not in found:
+                                    found.append(m)
+                                    step(f"from body: {m[:120]}")
                 except Exception as exc:
-                    step(f"getSources follow failed: {exc}")
+                    step(f"getSources in-page failed: {exc}")
 
             step(f"total captured: {len(found)}")
 
