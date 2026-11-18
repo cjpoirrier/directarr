@@ -891,53 +891,38 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         "headers": {"Referer": "https://play.vhscdn.to/", "Origin": "https://play.vhscdn.to"},
                     })
             result["subtitles"] = subtitles
-            # Follow short CDN links via fetch (avoids navigation timeout)
+            # Resolve short links outside the browser (avoids CORS)
+            import httpx as _httpx
             resolved = []
-            for v in result["variants"]:
-                u = v["url"]
-                if "savedly.net" in u or (not any(x in u.lower() for x in (".m3u8", ".mp4", ".mkv", ".ts"))):
-                    try:
-                        step(f"resolving {u[:60]}")
-                        info = await page.evaluate(f"""
-                            async () => {{
-                                try {{
-                                    const r = await fetch({u!r}, {{
-                                        credentials: 'include',
-                                        redirect: 'follow',
-                                        headers: {{ 'Accept': '*/*' }}
-                                    }});
-                                    const text = await r.text();
-                                    return {{
-                                        status: r.status,
-                                        finalUrl: r.url,
-                                        contentType: r.headers.get('content-type') || '',
-                                        body: text.slice(0, 500)
-                                    }};
-                                }} catch(e) {{
-                                    return {{ error: String(e) }};
-                                }}
-                            }}
-                        """)
-                        step(f"  resolve info: {info}")
-                        if info and not info.get("error"):
-                            body = info.get("body") or ""
-                            final = info.get("finalUrl") or u
-                            import re as _re
-                            m = _re.search(r"https?://[^\s\"']+\.(?:m3u8|mp4|ts)[^\s\"']*", body, _re.I)
-                            if m:
-                                v["url"] = m.group(0)
-                                step(f"  resolved: {v['url'][:100]}")
-                            elif any(x in final.lower() for x in (".m3u8", ".mp4", "/cdn/")):
-                                v["url"] = final
-                                step(f"  resolved to final: {final[:100]}")
-                            elif "#EXTM3U" in body:
-                                # body itself is a playlist — keep original but note it
-                                step("  body is m3u8 content")
-                        resolved.append(v)
-                    except Exception as exc:
-                        step(f"  resolve failed: {exc}")
-                        resolved.append(v)
-                else:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://play.vhscdn.to/",
+                "Accept": "*/*",
+            }
+            async with _httpx.AsyncClient(follow_redirects=True, timeout=20, headers=headers) as client:
+                for v in result["variants"]:
+                    u = v["url"]
+                    if "savedly.net" in u or not any(x in u.lower() for x in (".m3u8", ".mp4", ".mkv", ".ts")):
+                        try:
+                            step(f"resolving {u[:60]}")
+                            r = await client.get(u)
+                            step(f"  status={r.status_code} final={str(r.url)[:80]} ct={r.headers.get('content-type','')[:40]}")
+                            body = r.text[:800]
+                            if "#EXTM3U" in body:
+                                step("  body is m3u8")
+                                # keep URL; downloader can fetch it with same headers
+                            else:
+                                import re as _re
+                                m = _re.search(r"https?://[^\s\"']+\.(?:m3u8|mp4|ts)[^\s\"']*", body, _re.I)
+                                if m:
+                                    v["url"] = m.group(0)
+                                    step(f"  resolved: {v['url'][:100]}")
+                                elif any(x in str(r.url).lower() for x in (".m3u8", ".mp4", "/cdn/")):
+                                    v["url"] = str(r.url)
+                                    step(f"  resolved to: {v['url'][:100]}")
+                            v["headers"] = headers
+                        except Exception as exc:
+                            step(f"  resolve failed: {exc}")
                     resolved.append(v)
             result["variants"] = resolved
 
