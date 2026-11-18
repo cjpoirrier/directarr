@@ -760,7 +760,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             def on_request(request):
                 u = request.url
                 low = u.lower()
-                if any(k in low for k in ("m3u8", "mp4", "mkv", "getsources", "/ajax/sources", "cdn/", "hls", "embed")):
+                if any(k in low for k in ("m3u8", "mp4", "mkv", "getsources", "/ajax/sources", "cdn/", "hls", "embed", "video", "stream", "file=", ".ts")):
                     if u not in found:
                         found.append(u)
                         step(f"net: {u[:140]}")
@@ -783,17 +783,20 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 except Exception:
                     continue
 
-            # Click server buttons if present
-            for name in ["DatSaV", "Vidplay", "BYFMS", "MyCloud"]:
-                try:
-                    el = page.get_by_text(name, exact=False).first
-                    if await el.count() > 0:
-                        await el.click(timeout=3000)
-                        step(f"clicked server {name}")
-                        await page.wait_for_timeout(3000)
-                        break
-                except Exception:
-                    continue
+            # Only click a server button if we don't already have sources
+            if not any("/ajax/sources" in u or "embed" in u.lower() for u in found):
+                for name in ["DatSaV", "Vidplay", "BYFMS", "MyCloud"]:
+                    try:
+                        el = page.get_by_text(name, exact=False).first
+                        if await el.count() > 0:
+                            await el.click(timeout=3000)
+                            step(f"clicked server {name}")
+                            await page.wait_for_timeout(3000)
+                            break
+                    except Exception:
+                        continue
+            else:
+                step("server already selected, skipping click")
 
             await page.wait_for_timeout(10000)
 
@@ -897,7 +900,22 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                             except Exception:
                                 continue
                         await page.wait_for_timeout(8000)
+                        # Log recent requests and scan page for video URLs
                         step(f"after embed, found: {len(found)}")
+                        try:
+                            html = await page.content()
+                            import re as _re
+                            for m in _re.findall(r'https?://[^\s"\']+\.(?:mp4|m3u8|mkv|ts)[^\s"\']*', html, _re.I):
+                                if m not in found:
+                                    found.append(m)
+                                    step(f"from embed html: {m[:120]}")
+                            # Also look for common source patterns
+                            for m in _re.findall(r'["\'](https?://[^"\']+(?:video|stream|file|media)[^"\']*)["\']', html, _re.I):
+                                if m not in found and len(m) > 20:
+                                    found.append(m)
+                                    step(f"from embed pattern: {m[:120]}")
+                        except Exception as exc:
+                            step(f"embed scan failed: {exc}")
                     except Exception as exc:
                         step(f"embed follow failed: {exc}")
 
