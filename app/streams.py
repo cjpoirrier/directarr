@@ -657,10 +657,9 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             "ffmpeg", "-y",
             "-hide_banner", "-loglevel", "error",
             "-user_agent", USER_AGENT,
-            "-allowed_extensions", "ALL",
-                    ]
+        ]
         if is_hls:
-            cmd += ["-f", "hls"]
+            cmd += ["-allowed_extensions", "ALL", "-f", "hls"]
         if header_arg:
             cmd += ["-headers", header_arg]
         cmd += [
