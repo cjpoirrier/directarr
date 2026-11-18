@@ -27,6 +27,14 @@ USER_AGENT = "Directarr/0.2 StreamDetect"
 # FlareSolverr (configurable via env for Docker) + optional Selenium fallback
 FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 
+def _flaresolverr_enabled() -> bool:
+    """Check settings store for flaresolverr_enabled flag."""
+    try:
+        from .settings_store import load_settings
+        return bool(load_settings().get("flaresolverr_enabled", True))
+    except Exception:
+        return bool(FLARESOLVERR_URL)
+
 def _looks_like_cloudflare(text: str, status: int) -> bool:
     if status in (403, 503):
         return True
@@ -178,7 +186,7 @@ async def detect_streams(
         final_url = str(r.url)
         status = r.status_code
         step(f"fetched {final_url} status={status} bytes={len(text)}")
-        if _looks_like_cloudflare(text, status):
+        if _looks_like_cloudflare(text, status) and _flaresolverr_enabled():
             step("Cloudflare indicators detected, trying FlareSolverr")
             try:
                 text, final_url, fs_cookies = await _fetch_via_flaresolverr(url, session_id=flaresolverr_session)
@@ -652,22 +660,23 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
                 _log(f"manual download failed: {exc}", "error")
                 # fall through to normal ffmpeg
 
+        is_hls = ".m3u8" in stream_url.lower() or "/hls/" in stream_url.lower()
         cmd = [
             "ffmpeg", "-y",
             "-hide_banner", "-loglevel", "error",
             "-user_agent", USER_AGENT,
-            "-allowed_extensions", "ALL",
-            "-extension_picky", "0",
-            "-f", "hls",
         ]
+        if is_hls:
+            cmd += ["-f", "hls"]
         if header_arg:
             cmd += ["-headers", header_arg]
         cmd += [
             "-i", stream_url,
             "-c", "copy",
-            "-bsf:a", "aac_adtstoasc",
-            str(staging),
         ]
+        if is_hls:
+            cmd += ["-bsf:a", "aac_adtstoasc"]
+        cmd += [str(staging)]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Poll for cancel and timeout
@@ -759,7 +768,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
             def on_request(request):
                 u = request.url
                 low = u.lower()
-                if any(k in low for k in ("m3u8", "mp4", "mkv", "getsources", "/ajax/sources", "cdn/", "hls", "embed")):
+                if any(k in low for k in ("m3u8", "mp4", "mkv", "getsources", "/ajax/sources", "cdn/", "hls", "embed", "video", "stream", "file=", ".ts")):
                     if u not in found:
                         found.append(u)
                         step(f"net: {u[:140]}")
@@ -767,8 +776,9 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
 
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(4000)
-            title = await page.title()
+            title = await page.title() or "video"
             step(f"title: {title[:70]}")
+            result["title"] = title
 
             # Click play-like elements
             for sel in ["[class*='play']", "video", "button"]:
@@ -781,17 +791,20 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 except Exception:
                     continue
 
-            # Click server buttons if present
-            for name in ["DatSaV", "Vidplay", "BYFMS", "MyCloud"]:
-                try:
-                    el = page.get_by_text(name, exact=False).first
-                    if await el.count() > 0:
-                        await el.click(timeout=3000)
-                        step(f"clicked server {name}")
-                        await page.wait_for_timeout(3000)
-                        break
-                except Exception:
-                    continue
+            # Only click a server button if we don't already have sources
+            if not any("/ajax/sources" in u or "embed" in u.lower() for u in found):
+                for name in ["DatSaV", "Vidplay", "BYFMS", "MyCloud"]:
+                    try:
+                        el = page.get_by_text(name, exact=False).first
+                        if await el.count() > 0:
+                            await el.click(timeout=3000)
+                            step(f"clicked server {name}")
+                            await page.wait_for_timeout(3000)
+                            break
+                    except Exception:
+                        continue
+            else:
+                step("server already selected, skipping click")
 
             await page.wait_for_timeout(10000)
 
@@ -816,27 +829,171 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                 except Exception as exc:
                     step(f"ajax follow failed: {exc}")
 
+            # Call getSources from the embed page context (keeps cookies/referer)
+            gs = next((u for u in found if "getSources" in u), None)
+            if gs:
+                try:
+                    step(f"fetching getSources in-page: {gs[:80]}")
+                    gbody = await page.evaluate(f"""
+                        async () => {{
+                            const r = await fetch({gs!r}, {{
+                                credentials: 'include',
+                                headers: {{
+                                    'X-Requested-With': 'XMLHttpRequest',
+                                    'Accept': 'application/json, text/plain, */*'
+                                }}
+                            }});
+                            return await r.text();
+                        }}
+                    """)
+                    step(f"getSources body: {(gbody or '')[:400]}")
+                    if gbody and ("file" in gbody or "m3u8" in gbody or "sources" in gbody or "cdn." in gbody):
+                        import json as _json
+                        try:
+                            gd = _json.loads(gbody)
+                            sources = gd.get("sources") or {}
+                            # Handle quality-keyed dict: {"HD": ["url"], "SD": ["url"], ...}
+                            if isinstance(sources, dict):
+                                qmap = result.setdefault("_qmap", {})
+                                for quality, urls in sources.items():
+                                    if isinstance(urls, list):
+                                        for fu in urls:
+                                            if fu and fu not in found:
+                                                found.append(fu)
+                                                qlabel = {"FHD": "1080p", "HD": "720p", "HQ": "720p", "SD": "480p"}.get(quality.upper(), quality)
+                                                qmap[fu] = qlabel
+                                                step(f"source {quality}: {fu[:120]}")
+                                    elif isinstance(urls, str) and urls not in found:
+                                        found.append(urls)
+                                        step(f"source {quality}: {urls[:120]}")
+                            elif isinstance(sources, list):
+                                for s in sources:
+                                    fu = (s.get("file") or s.get("url") or "") if isinstance(s, dict) else str(s)
+                                    if fu and fu not in found:
+                                        found.append(fu)
+                                        step(f"source: {fu[:120]}")
+                            elif isinstance(sources, str) and sources not in found:
+                                found.append(sources)
+                                step(f"source: {sources[:120]}")
+                        except Exception as exc:
+                            step(f"json parse failed: {exc}")
+                            import re as _re
+                            for m in _re.findall(r"https?://[^\s\"']+", gbody):
+                                if m not in found:
+                                    found.append(m)
+                                    step(f"from body: {m[:120]}")
+                except Exception as exc:
+                    step(f"getSources in-page failed: {exc}")
+
+            # Generic: if no direct media yet, follow any embed-like URL
+            has_media = any(x in u.lower() for u in found for x in (".m3u8", ".mp4", ".mkv", "savedly.net", "/cdn/"))
+            if not has_media:
+                embed_candidate = next((
+                    u for u in found
+                    if any(k in u.lower() for k in ("embed", "player", "iframe"))
+                    and "getSources" not in u and "/ajax/" not in u
+                ), None)
+                if embed_candidate:
+                    try:
+                        step(f"following embed: {embed_candidate[:90]}")
+                        await page.goto(embed_candidate, wait_until="domcontentloaded", timeout=20000)
+                        await page.wait_for_timeout(5000)
+                        for sel in ["[class*='play']", "video", ".jw-icon-playback", "button"]:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.count() > 0:
+                                    await el.click(timeout=2000)
+                                    step(f"clicked {sel} in embed")
+                                    break
+                            except Exception:
+                                continue
+                        await page.wait_for_timeout(8000)
+                        # Log recent requests and scan page for video URLs
+                        step(f"after embed, found: {len(found)}")
+                        # Dump recent request URLs for debugging
+                        try:
+                            # Re-read from performance entries
+                            entries = await page.evaluate("""
+                                () => performance.getEntriesByType('resource').map(e => e.name).slice(-30)
+                            """)
+                            for e in (entries or [])[-15:]:
+                                step(f"  res: {e[:130]}")
+                        except Exception:
+                            pass
+                        try:
+                            html = await page.content()
+                            import re as _re
+                            for m in _re.findall(r'https?://[^\s"\']+\.(?:mp4|m3u8|mkv|ts)[^\s"\']*', html, _re.I):
+                                if m not in found:
+                                    found.append(m)
+                                    step(f"from embed html: {m[:120]}")
+                            # Also look for common source patterns
+                            for m in _re.findall(r'["\'](https?://[^"\']+(?:video|stream|file|media)[^"\']*)["\']', html, _re.I):
+                                if m not in found and len(m) > 20:
+                                    found.append(m)
+                                    step(f"from embed pattern: {m[:120]}")
+                        except Exception as exc:
+                            step(f"embed scan failed: {exc}")
+                    except Exception as exc:
+                        step(f"embed follow failed: {exc}")
+
             step(f"total captured: {len(found)}")
 
-            # Video only
+            # Video only — keep sources we extracted plus obvious media
             subtitles = []
             for u in found:
                 low = u.lower()
-                if any(x in low for x in (".vtt", ".srt", ".ass")):
+                if any(x in low for x in (".vtt", ".srt", ".ass", "sprite")):
                     subtitles.append(u)
                     continue
-                if any(x in low for x in (".m3u8", ".mp4", ".mkv", "/cdn/")):
-                    res = "1080p" if "1080" in low else "720p" if "720" in low else "unknown"
+                # Accept explicit media or anything from a CDN source host
+                if any(x in low for x in (".m3u8", ".mp4", ".mkv", "/cdn/", "savedly.net", "winghoster", "roburnt")):
+                    res = result.get("_qmap", {}).get(u) or ("1080p" if "1080" in low else "720p" if "720" in low else "unknown")
                     result["variants"].append({
                         "url": u,
                         "resolution": res,
                         "bandwidth": 0,
                         "codecs": "",
                         "name": "camoufox",
-                        "type": "hls" if ".m3u8" in low or "/cdn/" in low else "direct",
-                        "headers": {"Referer": url},
+                        "type": "hls" if any(x in low for x in (".m3u8", "/cdn/", "savedly")) else "direct",
+                        "headers": {"Referer": "https://play.vhscdn.to/", "Origin": "https://play.vhscdn.to"},
                     })
             result["subtitles"] = subtitles
+            # Resolve short links outside the browser (avoids CORS)
+            import httpx as _httpx
+            resolved = []
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://play.vhscdn.to/",
+                "Accept": "*/*",
+            }
+            async with _httpx.AsyncClient(follow_redirects=True, timeout=20, headers=headers) as client:
+                for v in result["variants"]:
+                    u = v["url"]
+                    if "savedly.net" in u or not any(x in u.lower() for x in (".m3u8", ".mp4", ".mkv", ".ts")):
+                        try:
+                            step(f"resolving {u[:60]}")
+                            r = await client.get(u)
+                            step(f"  status={r.status_code} final={str(r.url)[:80]} ct={r.headers.get('content-type','')[:40]}")
+                            body = r.text[:800]
+                            if "#EXTM3U" in body:
+                                step("  body is m3u8")
+                                # keep URL; downloader can fetch it with same headers
+                            else:
+                                import re as _re
+                                m = _re.search(r"https?://[^\s\"']+\.(?:m3u8|mp4|ts)[^\s\"']*", body, _re.I)
+                                if m:
+                                    v["url"] = m.group(0)
+                                    step(f"  resolved: {v['url'][:100]}")
+                                elif any(x in str(r.url).lower() for x in (".m3u8", ".mp4", "/cdn/")):
+                                    v["url"] = str(r.url)
+                                    step(f"  resolved to: {v['url'][:100]}")
+                            v["headers"] = headers
+                        except Exception as exc:
+                            step(f"  resolve failed: {exc}")
+                    resolved.append(v)
+            result["variants"] = resolved
+
             step(f"video: {len(result['variants'])}, subs: {len(subtitles)}")
 
             if not result["variants"]:
