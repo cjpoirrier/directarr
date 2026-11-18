@@ -21,15 +21,20 @@ subsCheck.onchange = () => {
 
 scanBtn.onclick = async () => {
   statusDiv.textContent = "Scanning…";
+  qualitiesDiv.innerHTML = "";
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   chrome.tabs.sendMessage(tab.id, { action: "scan" }, (res) => {
-    if (!res || !res.media) {
-      statusDiv.textContent = "No media found";
+    if (chrome.runtime.lastError) {
+      statusDiv.textContent = "Reload the page and try again";
       return;
     }
-    qualitiesDiv.innerHTML = "";
+    if (!res || !res.media || !res.media.length) {
+      statusDiv.textContent = "No media found (play the video first)";
+      return;
+    }
     const base = urlInput.value.trim().replace(/\/$/, "");
     if (!base) { statusDiv.textContent = "Set Directarr URL first"; return; }
+    const title = res.title || "episode";
     res.media.forEach((m) => {
       const row = document.createElement("div");
       row.className = "quality";
@@ -41,7 +46,7 @@ scanBtn.onclick = async () => {
         btn.textContent = "…";
         try {
           const body = {
-            title: res.title || "episode",
+            title: title,
             url: m.url,
             headers: { Referer: res.pageUrl }
           };
@@ -54,6 +59,9 @@ scanBtn.onclick = async () => {
             body: JSON.stringify(body)
           });
           btn.textContent = "Sent";
+          statusDiv.textContent = "Sent: " + title.slice(0, 40);
+          // Optional: close popup after a moment
+          setTimeout(() => window.close(), 1200);
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Retry";
@@ -63,6 +71,6 @@ scanBtn.onclick = async () => {
       row.appendChild(btn);
       qualitiesDiv.appendChild(row);
     });
-    statusDiv.textContent = res.media.length + " found";
+    statusDiv.textContent = res.media.length + " found — " + title.slice(0, 50);
   });
 };

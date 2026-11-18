@@ -271,6 +271,21 @@
                   </div>
                 </div>
                 <div class="panel">
+                  <h2>FlareSolverr</h2>
+                  <p class="hint">Optional Cloudflare bypass. Enable only if you have FlareSolverr running and reachable.</p>
+                  <div class="settings-grid">
+                    <div class="settings-label">Enabled</div>
+                    <div class="settings-field">
+                      <label class="chip"><input type="checkbox" id="settings-flaresolverr-enabled" /> Use FlareSolverr for blocked pages</label>
+                    </div>
+                    <div class="settings-label">URL</div>
+                    <div class="settings-field">
+                      <input id="settings-flaresolverr-url" type="text" placeholder="http://10.0.0.93:8191/v1" autocomplete="off" />
+                      <p class="hint">FlareSolverr /v1 endpoint. Must be reachable from the Directarr container.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel">
                   <h2>Security</h2>
                   <div class="settings-grid">
                     <div class="settings-label">Authentication</div>

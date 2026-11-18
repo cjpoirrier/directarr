@@ -43,8 +43,12 @@ def _looks_like_cloudflare(text: str, status: int) -> bool:
     return any(m in low for m in markers)
 
 async def _call_flaresolverr(payload: dict) -> dict:
+    from .settings_store import effective_flaresolverr_url
+    url = effective_flaresolverr_url() or FLARESOLVERR_URL
+    if not url:
+        raise RuntimeError("FlareSolverr not configured")
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(FLARESOLVERR_URL, json=payload)
+        r = await client.post(url, json=payload)
         r.raise_for_status()
         return r.json()
 
