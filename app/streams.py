@@ -658,8 +658,7 @@ def run_stream_download(job_id: str, title: str, stream_url: str, headers: dict 
             "-hide_banner", "-loglevel", "error",
             "-user_agent", USER_AGENT,
             "-allowed_extensions", "ALL",
-            "-extension_picky", "0",
-        ]
+                    ]
         if is_hls:
             cmd += ["-f", "hls"]
         if header_arg:
