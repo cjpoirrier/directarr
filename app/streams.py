@@ -834,12 +834,23 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         }}
                     """)
                     step(f"getSources body: {(gbody or '')[:400]}")
-                    if gbody and ("file" in gbody or "m3u8" in gbody or "sources" in gbody):
+                    if gbody and ("file" in gbody or "m3u8" in gbody or "sources" in gbody or "cdn." in gbody):
                         import json as _json
                         try:
                             gd = _json.loads(gbody)
-                            sources = gd.get("sources") or []
-                            if isinstance(sources, list):
+                            sources = gd.get("sources") or {}
+                            # Handle quality-keyed dict: {"HD": ["url"], "SD": ["url"], ...}
+                            if isinstance(sources, dict):
+                                for quality, urls in sources.items():
+                                    if isinstance(urls, list):
+                                        for fu in urls:
+                                            if fu and fu not in found:
+                                                found.append(fu)
+                                                step(f"source {quality}: {fu[:120]}")
+                                    elif isinstance(urls, str) and urls not in found:
+                                        found.append(urls)
+                                        step(f"source {quality}: {urls[:120]}")
+                            elif isinstance(sources, list):
                                 for s in sources:
                                     fu = (s.get("file") or s.get("url") or "") if isinstance(s, dict) else str(s)
                                     if fu and fu not in found:
@@ -847,8 +858,9 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                                         step(f"source: {fu[:120]}")
                             elif isinstance(sources, str) and sources not in found:
                                 found.append(sources)
-                                step(f"source str: {sources[:120]}")
-                        except Exception:
+                                step(f"source: {sources[:120]}")
+                        except Exception as exc:
+                            step(f"json parse failed: {exc}")
                             import re as _re
                             for m in _re.findall(r"https?://[^\s\"']+", gbody):
                                 if m not in found:
