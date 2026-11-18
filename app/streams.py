@@ -768,8 +768,9 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
 
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(4000)
-            title = await page.title()
+            title = await page.title() or "video"
             step(f"title: {title[:70]}")
+            result["title"] = title
 
             # Click play-like elements
             for sel in ["[class*='play']", "video", "button"]:
@@ -842,11 +843,14 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                             sources = gd.get("sources") or {}
                             # Handle quality-keyed dict: {"HD": ["url"], "SD": ["url"], ...}
                             if isinstance(sources, dict):
+                                qmap = result.setdefault("_qmap", {})
                                 for quality, urls in sources.items():
                                     if isinstance(urls, list):
                                         for fu in urls:
                                             if fu and fu not in found:
                                                 found.append(fu)
+                                                qlabel = {"FHD": "1080p", "HD": "720p", "HQ": "720p", "SD": "480p"}.get(quality.upper(), quality)
+                                                qmap[fu] = qlabel
                                                 step(f"source {quality}: {fu[:120]}")
                                     elif isinstance(urls, str) and urls not in found:
                                         found.append(urls)
@@ -881,7 +885,7 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                     continue
                 # Accept explicit media or anything from a CDN source host
                 if any(x in low for x in (".m3u8", ".mp4", ".mkv", "/cdn/", "savedly.net", "winghoster", "roburnt")):
-                    res = "1080p" if "1080" in low or "hd" in low else "720p" if "720" in low else "unknown"
+                    res = result.get("_qmap", {}).get(u) or ("1080p" if "1080" in low else "720p" if "720" in low else "unknown")
                     result["variants"].append({
                         "url": u,
                         "resolution": res,
