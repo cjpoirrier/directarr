@@ -891,6 +891,34 @@ async def capture_with_browser(url: str, timeout: int = 15, flaresolverr_session
                         "headers": {"Referer": url},
                     })
             result["subtitles"] = subtitles
+            # Follow short CDN links to get the real media URL
+            resolved = []
+            for v in result["variants"]:
+                u = v["url"]
+                if "savedly.net" in u or (not any(x in u.lower() for x in (".m3u8", ".mp4", ".mkv"))):
+                    try:
+                        step(f"resolving {u[:60]}")
+                        resp = await page.goto(u, wait_until="domcontentloaded", timeout=15000)
+                        final = page.url
+                        body = await page.evaluate("document.body.innerText") or ""
+                        step(f"  final={final[:80]} body={body[:150]}")
+                        # Look for m3u8 in the page or final URL
+                        import re as _re
+                        m = _re.search(r"https?://[^\s\"']+\.m3u8[^\s\"']*", body, _re.I)
+                        if m:
+                            v["url"] = m.group(0)
+                            step(f"  resolved m3u8: {v['url'][:100]}")
+                        elif ".m3u8" in final.lower() or "/cdn/" in final:
+                            v["url"] = final
+                            step(f"  resolved to: {final[:100]}")
+                        resolved.append(v)
+                    except Exception as exc:
+                        step(f"  resolve failed: {exc}")
+                        resolved.append(v)
+                else:
+                    resolved.append(v)
+            result["variants"] = resolved
+
             step(f"video: {len(result['variants'])}, subs: {len(subtitles)}")
 
             if not result["variants"]:
